@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -19,5 +20,9 @@ func main() {
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	server.ListenAndServe()
+
+	err := server.ListenAndServe()
+	if err != nil {
+		fmt.Print(err)
+	}
 }
