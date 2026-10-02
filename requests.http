@@ -1,0 +1,7 @@
+# Should return 200 OK with body '{"status":"ok"}'
+GET http://localhost:8080/healthz
+
+###
+
+# Should return 405 Method Not Allowed
+POST http://localhost:8080/healthz
