@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/dung204/taskapi/internal/httpapi"
@@ -22,7 +24,8 @@ func main() {
 	}
 
 	err := server.ListenAndServe()
-	if err != nil {
+	if !errors.Is(err, http.ErrServerClosed) {
 		fmt.Print(err)
+		os.Exit(1)
 	}
 }

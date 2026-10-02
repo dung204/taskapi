@@ -12,6 +12,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("{\"error\":\"internal server error\"}"))
 		fmt.Print(err) // TODO: replace with logger
 		return err
 	}
