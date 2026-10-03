@@ -19,10 +19,20 @@ const (
 	StatusOverdue Status = "overdue"
 )
 
-var AllowedStatuses = []string{
+var allowedPatchStatuses = []string{
 	string(StatusTodo),
 	string(StatusDoing),
 	string(StatusDone),
+}
+
+var allowedGetStatuses = append(allowedPatchStatuses, string(StatusOverdue))
+
+func (s Status) IsValidForPatch() bool {
+	return slices.Contains(allowedPatchStatuses, string(s))
+}
+
+func (s Status) IsValidForGet() bool {
+	return slices.Contains(allowedGetStatuses, string(s))
 }
 
 type Task struct {
@@ -95,8 +105,8 @@ func (t *Task) Patch(p Patch) error {
 
 	status := p.Status
 	if status != nil {
-		if !slices.Contains(AllowedStatuses, string(*status)) {
-			return fmt.Errorf("%w: status must be one of the following: %s", ErrInvalidInput, strings.Join(AllowedStatuses, ", "))
+		if !status.IsValidForPatch() {
+			return ErrInvalidPatchStatus
 		}
 
 		t.Status = *status
@@ -104,7 +114,8 @@ func (t *Task) Patch(p Patch) error {
 	}
 
 	if p.DueAt != nil && (t.DueAt == nil || p.DueAt.Compare(*t.DueAt) != 0) {
-		t.DueAt = p.DueAt
+		truncated := p.DueAt.UTC().Truncate(time.Microsecond)
+		t.DueAt = &truncated
 		changeUpdatedAt = true
 	}
 

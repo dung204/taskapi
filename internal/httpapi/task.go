@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
-	"strings"
 	"time"
 	"uuid"
 
@@ -96,11 +94,6 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := query.Get("status")
-	allowedGetStatues := append(task.AllowedStatuses, string(task.StatusOverdue))
-	if status != "" && !slices.Contains(allowedGetStatues, status) {
-		writeError(w, http.StatusBadRequest, "status must be one of the following: "+strings.Join(allowedGetStatues, ", "))
-		return
-	}
 
 	listFilter := task.ListFilter{
 		Limit:  limit,
@@ -109,6 +102,11 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tasks, err := handler.store.List(r.Context(), listFilter)
+
+	if errors.Is(err, task.ErrInvalidInput) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		writeError(w, http.StatusServiceUnavailable, "service unavailable")
