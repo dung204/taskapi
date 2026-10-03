@@ -25,3 +25,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 func writeError(w http.ResponseWriter, status int, msg string) error {
 	return writeJSON(w, status, map[string]string{"error": msg})
 }
+
+func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	err := json.NewDecoder(r.Body).Decode(dst)
+
+	if err != nil {
+		return writeError(w, http.StatusBadRequest, err.Error())
+	}
+
+	return nil
+}
