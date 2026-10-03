@@ -77,10 +77,6 @@ func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Tas
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 
-	if f.Status != "" && !f.Status.IsValidForGet() {
-		return nil, task.ErrInvalidGetStatus
-	}
-
 	result := make([]task.Task, 0)
 
 	for _, t := range store.tasks {

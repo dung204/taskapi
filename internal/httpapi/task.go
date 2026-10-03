@@ -94,6 +94,10 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := query.Get("status")
+	if status != "" && !task.Status(status).IsValidForGet() {
+		writeError(w, http.StatusBadRequest, task.ErrInvalidGetStatus.Error())
+		return
+	}
 
 	listFilter := task.ListFilter{
 		Limit:  limit,
@@ -102,11 +106,6 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tasks, err := handler.store.List(r.Context(), listFilter)
-
-	if errors.Is(err, task.ErrInvalidInput) {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		writeError(w, http.StatusServiceUnavailable, "service unavailable")
@@ -176,6 +175,11 @@ func (handler *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t, err := handler.store.Update(r.Context(), id, task.Patch(req))
+
+	if errors.Is(err, task.ErrInvalidInput) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if errors.Is(err, task.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())

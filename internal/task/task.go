@@ -25,7 +25,7 @@ var allowedPatchStatuses = []string{
 	string(StatusDone),
 }
 
-var allowedGetStatuses = append(allowedPatchStatuses, string(StatusOverdue))
+var allowedGetStatuses = slices.Concat(allowedPatchStatuses, []string{string(StatusOverdue)})
 
 func (s Status) IsValidForPatch() bool {
 	return slices.Contains(allowedPatchStatuses, string(s))
@@ -85,12 +85,15 @@ func (t *Task) Patch(p Patch) error {
 	title := p.Title
 	if title != nil {
 		trimmed := strings.TrimSpace(*title)
-		if utf8.RuneCountInString(trimmed) < 1 || utf8.RuneCountInString(trimmed) > 200 {
+		length := utf8.RuneCountInString(trimmed)
+		if length < 1 || length > 200 {
 			return fmt.Errorf("%w: title must have at least 1 and at most 200 characters", ErrInvalidInput)
 		}
 
-		t.Title = trimmed
-		changeUpdatedAt = true
+		if t.Title != trimmed {
+			t.Title = trimmed
+			changeUpdatedAt = true
+		}
 	}
 
 	description := p.Description
@@ -99,8 +102,10 @@ func (t *Task) Patch(p Patch) error {
 			return fmt.Errorf("%w: description must have at most 2000 characters", ErrInvalidInput)
 		}
 
-		t.Description = *description
-		changeUpdatedAt = true
+		if t.Description != *description {
+			t.Description = *description
+			changeUpdatedAt = true
+		}
 	}
 
 	status := p.Status
@@ -109,14 +114,19 @@ func (t *Task) Patch(p Patch) error {
 			return ErrInvalidPatchStatus
 		}
 
-		t.Status = *status
-		changeUpdatedAt = true
+		if t.Status != *status {
+			t.Status = *status
+			changeUpdatedAt = true
+		}
 	}
 
-	if p.DueAt != nil && (t.DueAt == nil || p.DueAt.Compare(*t.DueAt) != 0) {
-		truncated := p.DueAt.UTC().Truncate(time.Microsecond)
-		t.DueAt = &truncated
-		changeUpdatedAt = true
+	if p.DueAt != nil {
+		patch := p.DueAt.UTC().Truncate(time.Microsecond)
+
+		if t.DueAt == nil || t.DueAt.UTC().Truncate(time.Microsecond).Compare(patch) != 0 {
+			t.DueAt = &patch
+			changeUpdatedAt = true
+		}
 	}
 
 	if changeUpdatedAt {
