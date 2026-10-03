@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/dung204/taskapi/internal/httpapi"
+	"github.com/dung204/taskapi/internal/store/memory"
 )
 
 func main() {
 	config := loadConfig()
-	handler := httpapi.NewHandler()
+	store := memory.NewTaskStore()
+	handler := httpapi.NewHandler(store)
 
 	server := &http.Server{
 		Addr:              ":" + config.port,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"sync"
-	"time"
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
@@ -43,6 +42,10 @@ func (store *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
+	if _, found := store.tasks[id]; !found {
+		return task.ErrNotFound
+	}
+
 	delete(store.tasks, id)
 	return nil
 }
@@ -59,7 +62,7 @@ func (store *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error
 	t, found := store.tasks[id]
 
 	if !found {
-		return t, task.ErrNotFound
+		return task.Task{}, task.ErrNotFound
 	}
 
 	return t, nil
@@ -77,7 +80,7 @@ func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Tas
 	result := make([]task.Task, 0)
 
 	for _, t := range store.tasks {
-		if t.Status == f.Status {
+		if f.Status != "" && t.Status != f.Status {
 			continue
 		}
 
@@ -103,37 +106,13 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	t, err := store.Get(ctx, id)
+	t, found := store.tasks[id]
 
-	if err != nil {
-		return task.Task{}, err
+	if !found {
+		return task.Task{}, task.ErrNotFound
 	}
 
-	changeUpdatedAt := false
-
-	if p.Title != nil && *p.Title != t.Title {
-		changeUpdatedAt = true
-		t.Title = *p.Title
-	}
-
-	if p.Description != nil && *p.Description != t.Description {
-		changeUpdatedAt = true
-		t.Description = *p.Description
-	}
-
-	if p.Status != nil && *p.Status != t.Status {
-		changeUpdatedAt = true
-		t.Status = *p.Status
-	}
-
-	if p.DueAt != nil && p.DueAt.Compare(*t.DueAt) != 0 {
-		changeUpdatedAt = true
-		t.DueAt = p.DueAt
-	}
-
-	if changeUpdatedAt {
-		t.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
-	}
+	t.Patch(p)
 
 	store.tasks[id] = t
 	return t, nil

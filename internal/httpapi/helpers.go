@@ -30,7 +30,8 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	err := json.NewDecoder(r.Body).Decode(dst)
 
 	if err != nil {
-		return writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
+		return err
 	}
 
 	return nil

@@ -9,3 +9,20 @@ POST http://localhost:8080/healthz
 ###
 
 GET http://localhost:8080/tasks
+
+###
+
+GET http://localhost:8080/tasks/01a10221-4434-7f6c-ad33-0a630c171655
+
+###
+
+POST http://localhost:8080/tasks
+Content-Type: application/json
+
+{
+  "title": "Test"
+}
+
+###
+
+DELETE http://localhost:8080/tasks/01a10221-4434-7f6c-ad33-0a630c171655
