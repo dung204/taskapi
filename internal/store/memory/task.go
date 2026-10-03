@@ -88,7 +88,7 @@ func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Tas
 	}
 
 	slices.SortFunc(result, func(a, b task.Task) int {
-		return a.ID.Compare(b.ID)
+		return b.ID.Compare(a.ID)
 	})
 
 	start := min(f.Offset, len(result))
@@ -112,7 +112,11 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 		return task.Task{}, task.ErrNotFound
 	}
 
-	t.Patch(p)
+	err := t.Patch(p)
+
+	if err != nil {
+		return task.Task{}, err
+	}
 
 	store.tasks[id] = t
 	return t, nil

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 	"uuid"
 )
 
@@ -74,7 +75,7 @@ func (t *Task) Patch(p Patch) error {
 	title := p.Title
 	if title != nil {
 		trimmed := strings.TrimSpace(*title)
-		if len(trimmed) < 1 || len(trimmed) > 200 {
+		if utf8.RuneCountInString(trimmed) < 1 || utf8.RuneCountInString(trimmed) > 200 {
 			return fmt.Errorf("%w: title must have at least 1 and at most 200 characters", ErrInvalidInput)
 		}
 
@@ -84,7 +85,7 @@ func (t *Task) Patch(p Patch) error {
 
 	description := p.Description
 	if description != nil {
-		if len(*description) > 2000 {
+		if utf8.RuneCountInString(*description) > 2000 {
 			return fmt.Errorf("%w: description must have at most 2000 characters", ErrInvalidInput)
 		}
 
