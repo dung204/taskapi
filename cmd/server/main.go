@@ -9,11 +9,32 @@ import (
 
 	"github.com/dung204/taskapi/internal/httpapi"
 	"github.com/dung204/taskapi/internal/store/memory"
+	"github.com/dung204/taskapi/internal/store/postgres"
+	"github.com/dung204/taskapi/internal/task"
 )
 
 func main() {
 	config := loadConfig()
-	store := memory.NewTaskStore()
+
+	var store task.Store
+	switch config.store {
+	case "memory":
+		store = memory.NewTaskStore()
+	case "postgres":
+		if config.databaseURL == "" {
+			fmt.Fprintln(os.Stderr, "DATABASE_URL is empty.")
+			os.Exit(1)
+		}
+
+		db := connectDb(config)
+		defer db.Close()
+
+		store = postgres.NewTaskStore(db)
+	default:
+		fmt.Fprintf(os.Stderr, `Undefined STORE: '%s'\n`, config.store)
+		os.Exit(1)
+	}
+
 	handler := httpapi.NewHandler(store)
 
 	server := &http.Server{
