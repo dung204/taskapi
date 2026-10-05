@@ -10,8 +10,8 @@ import (
 )
 
 type TaskStore struct {
-	tasks map[uuid.UUID]task.Task
 	mu    sync.RWMutex
+	tasks map[uuid.UUID]task.Task
 }
 
 var _ task.Store = (*TaskStore)(nil)
@@ -23,45 +23,45 @@ func NewTaskStore() *TaskStore {
 }
 
 // Create implements [task.Store].
-func (store *TaskStore) Create(ctx context.Context, t task.Task) (task.Task, error) {
+func (s *TaskStore) Create(ctx context.Context, t task.Task) (task.Task, error) {
 	if ctx.Err() != nil {
 		return task.Task{}, ctx.Err()
 	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	store.tasks[t.ID] = t
+	s.tasks[t.ID] = t
 	return t, nil
 }
 
 // Delete implements [task.Store].
-func (store *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
+func (s *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if _, found := store.tasks[id]; !found {
+	if _, found := s.tasks[id]; !found {
 		return task.ErrNotFound
 	}
 
-	delete(store.tasks, id)
+	delete(s.tasks, id)
 	return nil
 }
 
 // Get implements [task.Store].
-func (store *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
 	if ctx.Err() != nil {
 		return task.Task{}, ctx.Err()
 	}
 
-	store.mu.RLock()
-	defer store.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	t, found := store.tasks[id]
+	t, found := s.tasks[id]
 
 	if !found {
 		return task.Task{}, task.ErrNotFound
@@ -71,17 +71,17 @@ func (store *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error
 }
 
 // List implements [task.Store].
-func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
+func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
-	store.mu.RLock()
-	defer store.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	result := make([]task.Task, 0)
 
-	for _, t := range store.tasks {
+	for _, t := range s.tasks {
 		if f.Status != "" && t.Status != f.Status {
 			continue
 		}
@@ -100,15 +100,15 @@ func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Tas
 }
 
 // Update implements [task.Store].
-func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (task.Task, error) {
+func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (task.Task, error) {
 	if ctx.Err() != nil {
 		return task.Task{}, ctx.Err()
 	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	t, found := store.tasks[id]
+	t, found := s.tasks[id]
 
 	if !found {
 		return task.Task{}, task.ErrNotFound
@@ -120,6 +120,6 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 		return task.Task{}, err
 	}
 
-	store.tasks[id] = t
+	s.tasks[id] = t
 	return t, nil
 }

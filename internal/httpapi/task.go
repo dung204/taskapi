@@ -38,7 +38,7 @@ type updateTaskRequest struct {
 	DueAt       *time.Time   `json:"due_at"`
 }
 
-const DB_TIMEOUT = 3 * time.Second
+const dbTimeout = 3 * time.Second
 
 func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createTaskRequest
@@ -56,7 +56,7 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
 	created, err := h.store.Create(ctx, *t)
@@ -100,7 +100,7 @@ func (h *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Status: task.Status(status),
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
 	tasks, err := h.store.List(ctx, listFilter)
@@ -120,7 +120,7 @@ func (h *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
 	t, err := h.store.Get(ctx, id)
@@ -148,7 +148,7 @@ func (h *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
 	t, err := h.store.Update(ctx, id, task.Patch(req))
@@ -168,7 +168,7 @@ func (h *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
+	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
 	err = h.store.Delete(ctx, id)
