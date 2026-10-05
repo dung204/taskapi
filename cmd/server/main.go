@@ -31,12 +31,11 @@ func main() {
 		}
 
 		db, err := connectDB(config)
-		defer db.Close()
-
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		defer db.Close()
 
 		store = postgres.NewTaskStore(db)
 		handler = httpapi.NewHandler(store, db)

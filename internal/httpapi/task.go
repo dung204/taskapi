@@ -54,7 +54,10 @@ func (handler *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created, err := handler.store.Create(r.Context(), *t)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	created, err := handler.store.Create(ctx, *t)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -95,7 +98,10 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Status: task.Status(status),
 	}
 
-	tasks, err := handler.store.List(r.Context(), listFilter)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	tasks, err := handler.store.List(ctx, listFilter)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -112,7 +118,10 @@ func (handler *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := handler.store.Get(r.Context(), id)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	t, err := handler.store.Get(ctx, id)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -137,7 +146,10 @@ func (handler *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := handler.store.Update(r.Context(), id, task.Patch(req))
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	t, err := handler.store.Update(ctx, id, task.Patch(req))
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -154,7 +166,10 @@ func (handler *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = handler.store.Delete(r.Context(), id)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	err = handler.store.Delete(ctx, id)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return

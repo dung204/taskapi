@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 type storePinger interface {
@@ -21,7 +22,10 @@ func newHealthHandler(pinger storePinger) *healthHandler {
 
 func (handler *healthHandler) CheckHealth(w http.ResponseWriter, r *http.Request) {
 	if handler.pinger != nil {
-		err := handler.pinger.PingContext(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		err := handler.pinger.PingContext(ctx)
 		if err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "store": "unavailable"})
 			return

@@ -124,18 +124,27 @@ func (store *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error
 	return store.get(ctx, store.db, id, formatError)
 }
 
-func (store *TaskStore) get(ctx context.Context, q rowQuerier, id uuid.UUID, formatError func(err error) error) (task.Task, error) {
-	t := task.Task{}
-	row := q.QueryRowContext(
-		ctx,
-		`SELECT 
-			"id", "title", "description", "status", 
-			"due_at", "created_at", "updated_at"
-		FROM "tasks" 
-		WHERE "id" = $1`,
-		id,
-	)
-	err := scanToTask(row, &t)
+type formatErrorFunc = func(err error) error
+
+const selectTaskByID = `
+SELECT 
+	"id", "title", "description", "status", 
+	"due_at", "created_at", "updated_at"
+FROM "tasks" 
+WHERE "id" = $1
+`
+
+func (store *TaskStore) get(ctx context.Context, q rowQuerier, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
+	return queryTask(ctx, q, selectTaskByID, id, formatError)
+}
+
+func (store *TaskStore) getForUpdate(ctx context.Context, q rowQuerier, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
+	return queryTask(ctx, q, selectTaskByID+" FOR UPDATE", id, formatError)
+}
+
+func queryTask(ctx context.Context, q rowQuerier, query string, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
+	var t task.Task
+	err := scanToTask(q.QueryRowContext(ctx, query, id), &t)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return task.Task{}, task.ErrNotFound
@@ -202,7 +211,7 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 	}
 	defer tx.Rollback()
 
-	t, err := store.get(ctx, tx, id, formatError)
+	t, err := store.getForUpdate(ctx, tx, id, formatError)
 	if err != nil {
 		return t, err
 	}
