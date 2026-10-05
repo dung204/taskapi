@@ -16,6 +16,29 @@ type ctxKey string
 const requestIDKey ctxKey = "request_id"
 const requestIDHeaderKey = "X-Request-ID"
 
+type requestIDContextHandler struct {
+	slog.Handler
+}
+
+func NewRequestIDContextHandler(h slog.Handler) slog.Handler {
+	return requestIDContextHandler{Handler: h}
+}
+
+func (h requestIDContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	if id, ok := ctx.Value(requestIDKey).(string); ok {
+		r.AddAttrs(slog.String("request_id", id))
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h requestIDContextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return requestIDContextHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h requestIDContextHandler) WithGroup(name string) slog.Handler {
+	return requestIDContextHandler{Handler: h.Handler.WithGroup(name)}
+}
+
 var requestIDRegexp = regexp.MustCompile("^[A-Za-z0-9-]{1,64}$")
 
 func requestIDMiddleware(next http.Handler) http.Handler {
@@ -54,7 +77,6 @@ func loggingMiddleware(l *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			id, _ := r.Context().Value(requestIDKey).(string)
 
 			start := time.Now()
 			next.ServeHTTP(rec, r)
@@ -66,7 +88,6 @@ func loggingMiddleware(l *slog.Logger) middleware {
 			}
 
 			l.Log(r.Context(), level, "request completed",
-				"request_id", id,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
@@ -81,12 +102,11 @@ func recoverMiddleware(l *slog.Logger) middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					id, _ := r.Context().Value(requestIDKey).(string)
 					l.ErrorContext(r.Context(), "panic recovered",
-						"request_id", id,
 						"panic", rec,
 						"stack", string(debug.Stack()),
 					)
+					writeError(w, http.StatusInternalServerError, "internal server error")
 				}
 			}()
 			next.ServeHTTP(w, r)

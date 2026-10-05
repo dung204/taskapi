@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -15,12 +16,14 @@ import (
 )
 
 type taskHandler struct {
-	store task.Store
+	store  task.Store
+	logger *slog.Logger
 }
 
-func newTaskHandler(s task.Store) *taskHandler {
+func newTaskHandler(s task.Store, l *slog.Logger) *taskHandler {
 	return &taskHandler{
-		store: s,
+		store:  s,
+		logger: l,
 	}
 }
 
@@ -45,7 +48,7 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	err := readJSON(w, r, &req)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
+		h.logger.ErrorContext(r.Context(), err.Error())
 		return
 	}
 
@@ -61,7 +64,7 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.store.Create(ctx, *t)
 
-	if hasError := handleStoreError(w, err); hasError {
+	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
@@ -105,7 +108,7 @@ func (h *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 
 	tasks, err := h.store.List(ctx, listFilter)
 
-	if hasError := handleStoreError(w, err); hasError {
+	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
@@ -125,7 +128,7 @@ func (h *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 
 	t, err := h.store.Get(ctx, id)
 
-	if hasError := handleStoreError(w, err); hasError {
+	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
@@ -153,7 +156,7 @@ func (h *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	t, err := h.store.Update(ctx, id, task.Patch(req))
 
-	if hasError := handleStoreError(w, err); hasError {
+	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
@@ -173,7 +176,7 @@ func (h *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	err = h.store.Delete(ctx, id)
 
-	if hasError := handleStoreError(w, err); hasError {
+	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
@@ -181,7 +184,7 @@ func (h *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.Write(nil)
 }
 
-func handleStoreError(w http.ResponseWriter, err error) bool {
+func handleStoreError(ctx context.Context, w http.ResponseWriter, l *slog.Logger, err error) bool {
 	if errors.Is(err, task.ErrInvalidInput) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return true
@@ -199,7 +202,7 @@ func handleStoreError(w http.ResponseWriter, err error) bool {
 
 	if errors.Is(err, task.ErrServiceUnavailable) {
 		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
+		l.ErrorContext(ctx, err.Error())
 		return true
 	}
 
@@ -209,7 +212,7 @@ func handleStoreError(w http.ResponseWriter, err error) bool {
 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
-		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
+		l.ErrorContext(ctx, err.Error())
 		return true
 	}
 

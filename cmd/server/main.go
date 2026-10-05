@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -16,20 +15,10 @@ import (
 
 func main() {
 	cfg := loadConfig()
+	logger := newLogger(cfg)
 
 	var store task.Store
 	var handler http.Handler
-	var logger *slog.Logger
-
-	switch cfg.logFormat {
-	case "text":
-		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
-	case "json":
-		logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	default:
-		fmt.Fprintf(os.Stderr, `undefined LOG_FORMAT: '%s'\n`, cfg.logFormat)
-		os.Exit(1)
-	}
 
 	switch cfg.store {
 	case "memory":

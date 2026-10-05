@@ -9,6 +9,7 @@ POST http://localhost:8080/healthz
 ###
 
 GET http://localhost:8080/tasks
+X-Request-ID: $$@$@$
 
 ###
 
@@ -35,3 +36,7 @@ Content-Type: application/json
 {
   "title": "Test updated 3"
 }
+
+###
+
+GET http://localhost:8080/panic

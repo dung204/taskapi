@@ -25,9 +25,12 @@ func NewHandler(
 	}
 
 	healthHandler := newHealthHandler(pinger)
-	taskHandler := newTaskHandler(store)
+	taskHandler := newTaskHandler(store, logger)
+	panicHandler := newPanicHandler()
 
 	mux.Handle("GET /healthz", withMiddlewares(healthHandler.CheckHealth))
+
+	mux.Handle("GET /panic", withMiddlewares(panicHandler.TestPanic))
 
 	mux.Handle("POST /tasks", withMiddlewares(taskHandler.Create))
 	mux.Handle("GET /tasks", withMiddlewares(taskHandler.GetList))
