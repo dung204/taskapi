@@ -8,9 +8,10 @@ import (
 
 func NewHandler(
 	store task.Store,
+	pinger storePinger,
 ) http.Handler {
 	mux := http.NewServeMux()
-	healthHandler := newHealthHandler()
+	healthHandler := newHealthHandler(pinger)
 	taskHandler := newTaskHandler(store)
 
 	mux.HandleFunc("GET /healthz", healthHandler.CheckHealth)

@@ -20,9 +20,18 @@ POST http://localhost:8080/tasks
 Content-Type: application/json
 
 {
-  "title": "Test"
+  "title": "It's done"
 }
 
 ###
 
 DELETE http://localhost:8080/tasks/01a10221-4434-7f6c-ad33-0a630c171655
+
+###
+
+PATCH http://localhost:8080/tasks/01a10702-4786-7326-94ef-a5d211a9ccdf
+Content-Type: application/json
+
+{
+  "title": "Test updated 3"
+}

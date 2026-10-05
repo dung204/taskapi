@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 	"uuid"
@@ -42,7 +43,7 @@ func (handler *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	err := readJSON(w, r, &req)
 	if err != nil {
-		fmt.Println(err) // TODO: replace with logger
+		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
 		return
 	}
 
@@ -55,18 +56,7 @@ func (handler *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := handler.store.Create(r.Context(), *t)
 
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		fmt.Println(err) // TODO: replace with logger
+	if hasError := handleStoreError(w, err); hasError {
 		return
 	}
 
@@ -107,18 +97,7 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 
 	tasks, err := handler.store.List(r.Context(), listFilter)
 
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		fmt.Println(err) // TODO: replace with logger
+	if hasError := handleStoreError(w, err); hasError {
 		return
 	}
 
@@ -135,23 +114,7 @@ func (handler *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 
 	t, err := handler.store.Get(r.Context(), id)
 
-	if errors.Is(err, task.ErrNotFound) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		fmt.Println(err) // TODO: replace with logger
+	if hasError := handleStoreError(w, err); hasError {
 		return
 	}
 
@@ -170,34 +133,13 @@ func (handler *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	err = readJSON(w, r, &req)
 
 	if err != nil {
-		fmt.Println(err) // TODO: replace with logger
+		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
 		return
 	}
 
 	t, err := handler.store.Update(r.Context(), id, task.Patch(req))
 
-	if errors.Is(err, task.ErrInvalidInput) {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if errors.Is(err, task.ErrNotFound) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		fmt.Println(err) // TODO: replace with logger
+	if hasError := handleStoreError(w, err); hasError {
 		return
 	}
 
@@ -214,26 +156,52 @@ func (handler *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	err = handler.store.Delete(r.Context(), id)
 
-	if errors.Is(err, task.ErrNotFound) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		return
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		fmt.Println(err) // TODO: replace with logger
+	if hasError := handleStoreError(w, err); hasError {
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 	w.Write(nil)
+}
+
+func handleStoreError(w http.ResponseWriter, err error) (hasError bool) {
+	if errors.Is(err, task.ErrInvalidInput) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		hasError = true
+		return
+	}
+
+	if errors.Is(err, task.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		hasError = true
+		return
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeError(w, http.StatusServiceUnavailable, "service unavailable")
+		hasError = true
+		return
+	}
+
+	if errors.Is(err, task.ErrServiceUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "service unavailable")
+		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
+		hasError = true
+		return
+	}
+
+	if errors.Is(err, context.Canceled) {
+		hasError = true
+		return
+	}
+
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
+		hasError = true
+		return
+	}
+
+	hasError = false
+	return
 }

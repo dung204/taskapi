@@ -8,22 +8,27 @@ import (
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-type Scannable interface {
+type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanToTask(s Scannable, t *task.Task) error {
+func scanToTask(s scanner, t *task.Task) error {
 	return s.Scan(
 		&t.ID,
 		&t.Title,
 		&t.Description,
 		&t.Status,
-		t.DueAt,
+		&t.DueAt,
 		&t.CreatedAt,
 		&t.UpdatedAt,
 	)
+}
+
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 type TaskStore struct {
@@ -102,6 +107,11 @@ func (store *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 		return task.ErrNotFound
 	}
 
+	err = tx.Commit()
+	if err != nil {
+		return formatError(err)
+	}
+
 	return nil
 }
 
@@ -111,12 +121,12 @@ func (store *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error
 		return formatPostgresError("get", id.String(), err)
 	}
 
-	return store.get(ctx, id, formatError)
+	return store.get(ctx, store.db, id, formatError)
 }
 
-func (store *TaskStore) get(ctx context.Context, id uuid.UUID, formatError func(err error) error) (task.Task, error) {
+func (store *TaskStore) get(ctx context.Context, q rowQuerier, id uuid.UUID, formatError func(err error) error) (task.Task, error) {
 	t := task.Task{}
-	row := store.db.QueryRowContext(
+	row := q.QueryRowContext(
 		ctx,
 		`SELECT 
 			"id", "title", "description", "status", 
@@ -173,6 +183,10 @@ func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Tas
 		tasks = append(tasks, t)
 	}
 
+	if err = rows.Err(); err != nil {
+		return nil, formatError(err)
+	}
+
 	return tasks, nil
 }
 
@@ -188,7 +202,7 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 	}
 	defer tx.Rollback()
 
-	t, err := store.get(ctx, id, formatError)
+	t, err := store.get(ctx, tx, id, formatError)
 	if err != nil {
 		return t, err
 	}
@@ -202,10 +216,10 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 		ctx,
 		`UPDATE "tasks"
 		SET
-			"title" = $1
-			"description" = $2
-			"status" = $3
-			"due_at" = $4
+			"title" = $1,
+			"description" = $2,
+			"status" = $3,
+			"due_at" = $4,
 			"updated_at" = $5
 		WHERE "id" = $6
 		`,
@@ -213,7 +227,6 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 		t.Description,
 		t.Status,
 		t.DueAt,
-		t.CreatedAt,
 		t.UpdatedAt,
 		t.ID,
 	)
@@ -230,6 +243,11 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 		return task.Task{}, task.ErrNotFound
 	}
 
+	err = tx.Commit()
+	if err != nil {
+		return task.Task{}, formatError(err)
+	}
+
 	return t, nil
 }
 
@@ -237,6 +255,17 @@ func formatPostgresError(op string, taskId string, err error) error {
 	id := ""
 	if taskId != "" {
 		id = " " + taskId
+	}
+
+	if _, ok := errors.AsType[*pgconn.ConnectError](err); ok {
+		return fmt.Errorf("postgres: %s task%s: %w: %w", op, id, task.ErrServiceUnavailable, err)
+	}
+
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
+		switch pgErr.Code {
+		case "57P01", "57P02", "57P03":
+			return fmt.Errorf("postgres: %s task%s: %w: %w", op, id, task.ErrServiceUnavailable, err)
+		}
 	}
 
 	return fmt.Errorf("postgres: %s task%s: %w", op, id, err)

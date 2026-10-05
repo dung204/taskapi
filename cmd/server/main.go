@@ -17,25 +17,34 @@ func main() {
 	config := loadConfig()
 
 	var store task.Store
+	var handler http.Handler
+
 	switch config.store {
 	case "memory":
 		store = memory.NewTaskStore()
+		handler = httpapi.NewHandler(store, nil)
+
 	case "postgres":
 		if config.databaseURL == "" {
 			fmt.Fprintln(os.Stderr, "DATABASE_URL is empty.")
 			os.Exit(1)
 		}
 
-		db := connectDb(config)
+		db, err := connectDB(config)
 		defer db.Close()
 
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
 		store = postgres.NewTaskStore(db)
+		handler = httpapi.NewHandler(store, db)
+
 	default:
-		fmt.Fprintf(os.Stderr, `Undefined STORE: '%s'\n`, config.store)
+		fmt.Fprintf(os.Stderr, `undefined STORE: '%s'\n`, config.store)
 		os.Exit(1)
 	}
-
-	handler := httpapi.NewHandler(store)
 
 	server := &http.Server{
 		Addr:              ":" + config.port,
@@ -48,7 +57,7 @@ func main() {
 
 	err := server.ListenAndServe()
 	if !errors.Is(err, http.ErrServerClosed) {
-		fmt.Print(err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
