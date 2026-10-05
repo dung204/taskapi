@@ -6,6 +6,7 @@ type config struct {
 	port        string
 	databaseURL string
 	store       string
+	logFormat   string
 }
 
 func getenv(key, fallback string) string {
@@ -20,5 +21,6 @@ func loadConfig() config {
 		port:        getenv("PORT", "8080"),
 		databaseURL: getenv("DATABASE_URL", ""),
 		store:       getenv("STORE", "memory"),
+		logFormat:   getenv("LOG_FORMAT", "text"),
 	}
 }
