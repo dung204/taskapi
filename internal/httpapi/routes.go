@@ -7,8 +7,6 @@ import (
 	"github.com/dung204/taskapi/internal/task"
 )
 
-type handlerFunc = func(w http.ResponseWriter, r *http.Request)
-
 func NewHandler(
 	store task.Store,
 	logger *slog.Logger,
@@ -20,23 +18,19 @@ func NewHandler(
 	withLogging := loggingMiddleware(logger)
 	withRecover := recoverMiddleware(logger)
 
-	withMiddlewares := func(f handlerFunc) http.Handler {
-		return withRequestID(withLogging(withRecover(http.HandlerFunc(f))))
-	}
-
 	healthHandler := newHealthHandler(pinger)
 	taskHandler := newTaskHandler(store, logger)
 	panicHandler := newPanicHandler()
 
-	mux.Handle("GET /healthz", withMiddlewares(healthHandler.CheckHealth))
+	mux.HandleFunc("GET /healthz", healthHandler.CheckHealth)
 
-	mux.Handle("GET /panic", withMiddlewares(panicHandler.TestPanic))
+	mux.HandleFunc("GET /panic", panicHandler.TestPanic)
 
-	mux.Handle("POST /tasks", withMiddlewares(taskHandler.Create))
-	mux.Handle("GET /tasks", withMiddlewares(taskHandler.GetList))
-	mux.Handle("GET /tasks/{id}", withMiddlewares(taskHandler.GetOne))
-	mux.Handle("PATCH /tasks/{id}", withMiddlewares(taskHandler.Update))
-	mux.Handle("DELETE /tasks/{id}", withMiddlewares(taskHandler.Delete))
+	mux.HandleFunc("POST /tasks", taskHandler.Create)
+	mux.HandleFunc("GET /tasks", taskHandler.GetList)
+	mux.HandleFunc("GET /tasks/{id}", taskHandler.GetOne)
+	mux.HandleFunc("PATCH /tasks/{id}", taskHandler.Update)
+	mux.HandleFunc("DELETE /tasks/{id}", taskHandler.Delete)
 
-	return mux
+	return withRequestID(withLogging(withRecover(mux)))
 }

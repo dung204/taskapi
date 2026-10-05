@@ -21,7 +21,7 @@ POST http://localhost:8080/tasks
 Content-Type: application/json
 
 {
-  "title": "It's done"
+  "title": "It's done",
 }
 
 ###

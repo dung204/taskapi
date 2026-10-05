@@ -48,7 +48,6 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	err := readJSON(w, r, &req)
 	if err != nil {
-		h.logger.ErrorContext(r.Context(), err.Error())
 		return
 	}
 

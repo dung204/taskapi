@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 )
@@ -31,7 +33,23 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	err := json.NewDecoder(r.Body).Decode(dst)
 
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		var msg string
+		var syntaxErr *json.SyntaxError
+		var typeErr *json.UnmarshalTypeError
+
+		switch {
+		case errors.Is(err, io.EOF):
+			msg = "request body is required"
+		case errors.Is(err, io.EOF):
+			msg = "request body contains malformed JSON"
+		case errors.As(err, &syntaxErr):
+			msg = fmt.Sprintf("request body contains malformed JSON (at position %d)", syntaxErr.Offset)
+		case errors.As(err, &typeErr):
+			msg = fmt.Sprintf(`field "%s" has the wrong type`, typeErr.Field)
+		default:
+			msg = "invalid request body"
+		}
+		writeError(w, http.StatusBadRequest, msg)
 		return err
 	}
 
