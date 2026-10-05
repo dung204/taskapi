@@ -18,9 +18,9 @@ type taskHandler struct {
 	store task.Store
 }
 
-func newTaskHandler(store task.Store) *taskHandler {
+func newTaskHandler(s task.Store) *taskHandler {
 	return &taskHandler{
-		store,
+		store: s,
 	}
 }
 
@@ -38,7 +38,9 @@ type updateTaskRequest struct {
 	DueAt       *time.Time   `json:"due_at"`
 }
 
-func (handler *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
+const DB_TIMEOUT = 3 * time.Second
+
+func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createTaskRequest
 
 	err := readJSON(w, r, &req)
@@ -54,10 +56,10 @@ func (handler *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
 	defer cancel()
 
-	created, err := handler.store.Create(ctx, *t)
+	created, err := h.store.Create(ctx, *t)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -66,7 +68,7 @@ func (handler *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
-func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
+func (h *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
 	limit, err := strconv.Atoi(cmp.Or(query.Get("limit"), "20"))
@@ -98,10 +100,10 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 		Status: task.Status(status),
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
 	defer cancel()
 
-	tasks, err := handler.store.List(ctx, listFilter)
+	tasks, err := h.store.List(ctx, listFilter)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -110,7 +112,7 @@ func (handler *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tasks)
 }
 
-func (handler *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
+func (h *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 
 	if err != nil {
@@ -118,10 +120,10 @@ func (handler *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
 	defer cancel()
 
-	t, err := handler.store.Get(ctx, id)
+	t, err := h.store.Get(ctx, id)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -130,7 +132,7 @@ func (handler *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
-func (handler *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
+func (h *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 
 	if err != nil {
@@ -146,10 +148,10 @@ func (handler *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
 	defer cancel()
 
-	t, err := handler.store.Update(ctx, id, task.Patch(req))
+	t, err := h.store.Update(ctx, id, task.Patch(req))
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -158,7 +160,7 @@ func (handler *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
-func (handler *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 
 	if err != nil {
@@ -166,10 +168,10 @@ func (handler *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), DB_TIMEOUT)
 	defer cancel()
 
-	err = handler.store.Delete(ctx, id)
+	err = h.store.Delete(ctx, id)
 
 	if hasError := handleStoreError(w, err); hasError {
 		return
@@ -179,44 +181,37 @@ func (handler *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.Write(nil)
 }
 
-func handleStoreError(w http.ResponseWriter, err error) (hasError bool) {
+func handleStoreError(w http.ResponseWriter, err error) bool {
 	if errors.Is(err, task.ErrInvalidInput) {
 		writeError(w, http.StatusBadRequest, err.Error())
-		hasError = true
-		return
+		return true
 	}
 
 	if errors.Is(err, task.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
-		hasError = true
-		return
+		return true
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		hasError = true
-		return
+		return true
 	}
 
 	if errors.Is(err, task.ErrServiceUnavailable) {
 		writeError(w, http.StatusServiceUnavailable, "service unavailable")
 		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
-		hasError = true
-		return
+		return true
 	}
 
 	if errors.Is(err, context.Canceled) {
-		hasError = true
-		return
+		return true
 	}
 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
-		hasError = true
-		return
+		return true
 	}
 
-	hasError = false
-	return
+	return false
 }

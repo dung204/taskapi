@@ -14,9 +14,9 @@ type healthHandler struct {
 	pinger storePinger
 }
 
-func newHealthHandler(pinger storePinger) *healthHandler {
+func newHealthHandler(p storePinger) *healthHandler {
 	return &healthHandler{
-		pinger,
+		pinger: p,
 	}
 }
 

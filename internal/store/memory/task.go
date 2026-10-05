@@ -14,6 +14,8 @@ type TaskStore struct {
 	mu    sync.RWMutex
 }
 
+var _ task.Store = (*TaskStore)(nil)
+
 func NewTaskStore() *TaskStore {
 	return &TaskStore{
 		tasks: make(map[uuid.UUID]task.Task),

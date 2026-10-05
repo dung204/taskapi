@@ -35,27 +35,26 @@ type TaskStore struct {
 	db *sql.DB
 }
 
+var _ task.Store = (*TaskStore)(nil)
+
 func NewTaskStore(db *sql.DB) *TaskStore {
 	return &TaskStore{
-		db,
+		db: db,
 	}
 }
 
 // Create implements [task.Store].
-func (store *TaskStore) Create(ctx context.Context, t task.Task) (task.Task, error) {
+func (s *TaskStore) Create(ctx context.Context, t task.Task) (task.Task, error) {
 	formatError := func(err error) error {
 		return formatPostgresError("create", t.ID.String(), err)
 	}
 
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return task.Task{}, formatError(err)
-	}
-	defer tx.Rollback()
-
-	_, err = tx.ExecContext(
+	_, err := s.db.ExecContext(
 		ctx,
-		`INSERT INTO "tasks" VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		`INSERT INTO "tasks" 
+			("id", "title", "description", "status", 
+			"due_at", "created_at", "updated_at")
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		t.ID,
 		t.Title,
 		t.Description,
@@ -69,27 +68,16 @@ func (store *TaskStore) Create(ctx context.Context, t task.Task) (task.Task, err
 		return task.Task{}, formatError(err)
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return task.Task{}, formatError(err)
-	}
-
 	return t, nil
 }
 
 // Delete implements [task.Store].
-func (store *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
+func (s *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 	formatError := func(err error) error {
 		return formatPostgresError("delete", id.String(), err)
 	}
 
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return formatError(err)
-	}
-	defer tx.Rollback()
-
-	res, err := tx.ExecContext(
+	res, err := s.db.ExecContext(
 		ctx,
 		`DELETE FROM "tasks" WHERE "id" = $1`,
 		id,
@@ -107,21 +95,16 @@ func (store *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 		return task.ErrNotFound
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return formatError(err)
-	}
-
 	return nil
 }
 
 // Get implements [task.Store].
-func (store *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
 	formatError := func(err error) error {
 		return formatPostgresError("get", id.String(), err)
 	}
 
-	return store.get(ctx, store.db, id, formatError)
+	return s.get(ctx, s.db, id, formatError)
 }
 
 type formatErrorFunc = func(err error) error
@@ -134,12 +117,12 @@ FROM "tasks"
 WHERE "id" = $1
 `
 
-func (store *TaskStore) get(ctx context.Context, q rowQuerier, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
+func (s *TaskStore) get(ctx context.Context, q rowQuerier, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
 	return queryTask(ctx, q, selectTaskByID, id, formatError)
 }
 
-func (store *TaskStore) getForUpdate(ctx context.Context, q rowQuerier, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
-	return queryTask(ctx, q, selectTaskByID+" FOR UPDATE", id, formatError)
+func (s *TaskStore) getForUpdate(ctx context.Context, tx *sql.Tx, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
+	return queryTask(ctx, tx, selectTaskByID+" FOR UPDATE", id, formatError)
 }
 
 func queryTask(ctx context.Context, q rowQuerier, query string, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
@@ -158,12 +141,12 @@ func queryTask(ctx context.Context, q rowQuerier, query string, id uuid.UUID, fo
 }
 
 // List implements [task.Store].
-func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
+func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
 	formatError := func(err error) error {
-		return formatPostgresError("get", "", err)
+		return formatPostgresError("list", "", err)
 	}
 
-	rows, err := store.db.QueryContext(
+	rows, err := s.db.QueryContext(
 		ctx,
 		`SELECT 
 			"id", "title", "description", "status", 
@@ -200,18 +183,18 @@ func (store *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Tas
 }
 
 // Update implements [task.Store].
-func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (task.Task, error) {
+func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (task.Task, error) {
 	formatError := func(err error) error {
 		return formatPostgresError("update", id.String(), err)
 	}
 
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return task.Task{}, formatError(err)
 	}
 	defer tx.Rollback()
 
-	t, err := store.getForUpdate(ctx, tx, id, formatError)
+	t, err := s.getForUpdate(ctx, tx, id, formatError)
 	if err != nil {
 		return t, err
 	}
@@ -260,10 +243,10 @@ func (store *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) 
 	return t, nil
 }
 
-func formatPostgresError(op string, taskId string, err error) error {
+func formatPostgresError(op string, taskID string, err error) error {
 	id := ""
-	if taskId != "" {
-		id = " " + taskId
+	if taskID != "" {
+		id = " " + taskID
 	}
 
 	if _, ok := errors.AsType[*pgconn.ConnectError](err); ok {
