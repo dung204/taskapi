@@ -50,7 +50,14 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("connect to database %q on %q: %w", dbName, host, err)
 		}
-		defer db.Close()
+		defer func() {
+			err := db.Close()
+			if err != nil {
+				l.Warn("database close failed", "error", err)
+			}
+
+			l.Error("database closed")
+		}()
 
 		l.Info("database connected",
 			"max_open_conns", db.Stats().MaxOpenConnections,
@@ -99,6 +106,7 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 	}()
 
 	shutdown := func(srv *http.Server) error {
+		l.Info("shutting down server")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -107,10 +115,13 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 
 	select {
 	case <-ctx.Done():
+		l.Info("shutdown signal received", "cause", context.Cause(ctx))
+
 		err := shutdown(srv)
 		if err != nil {
 			return fmt.Errorf("shutdown: %w", err)
 		}
+		l.Info("server stopped")
 		return nil
 	case err = <-errChan:
 		shutdownErr := shutdown(srv)
