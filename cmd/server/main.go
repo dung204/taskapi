@@ -33,17 +33,35 @@ func main() {
 		handler = httpapi.NewHandler(store, logger, nil)
 
 	case "postgres":
+		if cfg.databaseURL == "" {
+			logger.Error("cannot connect to database", "error", "DATABASE_URL is empty")
+		}
+
+		host, dbName, err := parseDBURL(cfg.databaseURL)
+		if err != nil {
+			logger.Error("cannot connect to database", "error", err)
+		}
+
+		logger.Debug("connecting to database",
+			"host", host,
+			"database", dbName,
+		)
+
 		start := time.Now()
-		db, host, dbName, err := connectDB(cfg.databaseURL)
+		db, err := connectDB(cfg.databaseURL)
 		elapsed := time.Since(start)
 
 		if err != nil {
-			logger.Error("connect to database failed", "error", err)
+			logger.Error("connect to database failed",
+				"error", err,
+				"host", host,
+				"database", dbName,
+			)
 			os.Exit(1)
 		}
 		defer db.Close()
 
-		logger.Info("connect to database successfully",
+		logger.Info("database connected",
 			"max_open_conns", db.Stats().MaxOpenConnections,
 			"connect_duration_ms", float64(elapsed)/float64(time.Millisecond),
 			"host", host,
@@ -54,7 +72,7 @@ func main() {
 		handler = httpapi.NewHandler(store, logger, db)
 
 	default:
-		logger.Error(fmt.Sprintf("undefined STORE '%q'", cfg.store), "error", err)
+		logger.Error("invalid STORE", "store", cfg.store)
 		os.Exit(1)
 	}
 
@@ -69,11 +87,14 @@ func main() {
 
 	ln, err := net.Listen("tcp", server.Addr)
 	if err != nil {
-		logger.Error("port listened failed", "error", err)
+		logger.Error("listen failed", "error", err)
+		os.Exit(1)
 	}
 	defer ln.Close()
 
 	logger.Info("server started",
+		"port", cfg.port,
+		"addr", server.Addr,
 		"store", cfg.store,
 		"log_format", cfg.logFormat,
 		"log_level", cfg.logLevel,

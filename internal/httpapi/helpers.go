@@ -72,5 +72,5 @@ func parseTime(field string, s *string) (*time.Time, error) {
 		return nil, fmt.Errorf("%w: %s must be an RFC 3339 date-time, for example 2030-01-01T00:00:00Z", task.ErrInvalidInput, field)
 	}
 
-	return &t, err
+	return &t, nil
 }

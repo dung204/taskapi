@@ -24,19 +24,19 @@ func parseDBURL(dbURL string) (host, dbName string, err error) {
 	return host, dbName, nil
 }
 
-func connectDB(dbURL string) (db *sql.DB, host, dbName string, err error) {
-	if dbURL == "" {
-		return nil, "", "", errors.New("DATABASE_URL is empty")
-	}
+func connectDB(dbURL string) (*sql.DB, error) {
+	// if dbURL == "" {
+	// 	return nil, errors.New("DATABASE_URL is empty")
+	// }
 
-	host, dbName, err = parseDBURL(dbURL)
-	if err != nil {
-		return nil, host, dbName, err
-	}
+	// host, dbName, err = parseDBURL(dbURL)
+	// if err != nil {
+	// 	return nil, host, dbName, err
+	// }
 
-	db, err = sql.Open("pgx", dbURL)
+	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
-		return nil, host, dbName, fmt.Errorf("open database: %w", err)
+		return nil, fmt.Errorf("open database: %w", err)
 	}
 
 	db.SetMaxOpenConns(10)
@@ -47,8 +47,8 @@ func connectDB(dbURL string) (db *sql.DB, host, dbName string, err error) {
 	err = db.PingContext(ctx)
 	if err != nil {
 		db.Close()
-		return nil, host, dbName, fmt.Errorf("ping database: %w", err)
+		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	return db, host, dbName, nil
+	return db, nil
 }
