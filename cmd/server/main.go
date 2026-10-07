@@ -51,12 +51,12 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 			return fmt.Errorf("connect to database %q on %q: %w", dbName, host, err)
 		}
 		defer func() {
-			err := db.Close()
-			if err != nil {
+			if err := db.Close(); err != nil {
 				l.Warn("database close failed", "error", err)
+				return
 			}
 
-			l.Error("database closed")
+			l.Info("database closed")
 		}()
 
 		l.Info("database connected",
@@ -148,8 +148,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = run(ctx, cfg, l)
-	if err != nil {
+	if err := run(ctx, cfg, l); err != nil {
 		l.Error("server failed", "error", err)
 		os.Exit(1)
 	}
