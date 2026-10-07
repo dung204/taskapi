@@ -93,20 +93,19 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 	errChan := make(chan error, 1)
 
 	go func() {
-		err = srv.Serve(ln)
-		if !errors.Is(err, http.ErrServerClosed) {
-			errChan <- err
+		if serveErr := srv.Serve(ln); !errors.Is(serveErr, http.ErrServerClosed) {
+			errChan <- serveErr
 			close(errChan)
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("Shutdown signal received")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		srv.Shutdown(shutdownCtx)
+		return nil
 	case err = <-errChan:
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -114,8 +113,6 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 		srv.Shutdown(shutdownCtx)
 		return fmt.Errorf("serve: %w", err)
 	}
-
-	return nil
 }
 
 func main() {
