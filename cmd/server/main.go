@@ -63,7 +63,7 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 		handler = httpapi.NewHandler(store, l, db)
 
 	default:
-		return fmt.Errorf("invalid STORE '%q'", cfg.store)
+		return fmt.Errorf("invalid STORE %q", cfg.store)
 	}
 
 	srv := &http.Server{
@@ -95,22 +95,28 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 	go func() {
 		if serveErr := srv.Serve(ln); !errors.Is(serveErr, http.ErrServerClosed) {
 			errChan <- serveErr
-			close(errChan)
 		}
 	}()
 
+	shutdown := func(srv *http.Server) error {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		return srv.Shutdown(shutdownCtx)
+	}
+
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		srv.Shutdown(shutdownCtx)
+		err := shutdown(srv)
+		if err != nil {
+			return fmt.Errorf("shutdown: %w", err)
+		}
 		return nil
 	case err = <-errChan:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		srv.Shutdown(shutdownCtx)
+		shutdownErr := shutdown(srv)
+		if shutdownErr != nil {
+			l.Error("shutdown failed", "error", shutdownErr)
+		}
 		return fmt.Errorf("serve: %w", err)
 	}
 }
@@ -118,6 +124,10 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	cfg := loadConfig()
 
@@ -132,5 +142,4 @@ func main() {
 		l.Error("server failed", "error", err)
 		os.Exit(1)
 	}
-
 }
