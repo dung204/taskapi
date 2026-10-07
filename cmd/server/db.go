@@ -3,16 +3,40 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func connectDB(conf config) (*sql.DB, error) {
-	db, err := sql.Open("pgx", conf.databaseURL)
+func parseDBURL(dbURL string) (host, dbName string, err error) {
+	u, err := url.Parse(dbURL)
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+		return "", "", errors.New("DATABASE_URL is not a valid URL")
+	}
+
+	host = u.Hostname()
+	dbName = strings.TrimPrefix(u.Path, "/")
+
+	return host, dbName, nil
+}
+
+func connectDB(dbURL string) (db *sql.DB, host, dbName string, err error) {
+	if dbURL == "" {
+		return nil, "", "", errors.New("DATABASE_URL is empty")
+	}
+
+	host, dbName, err = parseDBURL(dbURL)
+	if err != nil {
+		return nil, host, dbName, err
+	}
+
+	db, err = sql.Open("pgx", dbURL)
+	if err != nil {
+		return nil, host, dbName, fmt.Errorf("open database: %w", err)
 	}
 
 	db.SetMaxOpenConns(10)
@@ -23,9 +47,8 @@ func connectDB(conf config) (*sql.DB, error) {
 	err = db.PingContext(ctx)
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+		return nil, host, dbName, fmt.Errorf("ping database: %w", err)
 	}
 
-	fmt.Println("connected to database!")
-	return db, nil
+	return db, host, dbName, nil
 }

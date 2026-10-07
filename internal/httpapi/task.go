@@ -31,14 +31,42 @@ type createTaskRequest struct {
 	Title       string      `json:"title"`
 	Description *string     `json:"description"`
 	Status      task.Status `json:"status"`
-	DueAt       *time.Time  `json:"due_at"`
+	DueAt       *string     `json:"due_at"`
+}
+
+func (r createTaskRequest) toNewParams() (task.NewParams, error) {
+	dueAt, err := parseTime("due_at", r.DueAt)
+	if err != nil {
+		return task.NewParams{}, err
+	}
+
+	return task.NewParams{
+		Title:       r.Title,
+		Description: r.Description,
+		Status:      r.Status,
+		DueAt:       dueAt,
+	}, nil
 }
 
 type updateTaskRequest struct {
 	Title       *string      `json:"title"`
 	Description *string      `json:"description"`
 	Status      *task.Status `json:"status"`
-	DueAt       *time.Time   `json:"due_at"`
+	DueAt       *string      `json:"due_at"`
+}
+
+func (r updateTaskRequest) toPatch() (task.Patch, error) {
+	dueAt, err := parseTime("due_at", r.DueAt)
+	if err != nil {
+		return task.Patch{}, err
+	}
+
+	return task.Patch{
+		Title:       r.Title,
+		Description: r.Description,
+		Status:      r.Status,
+		DueAt:       dueAt,
+	}, nil
 }
 
 const dbTimeout = 3 * time.Second
@@ -51,7 +79,13 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := task.New(task.NewParams(req))
+	p, err := req.toNewParams()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	t, err := task.New(p)
 
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -153,7 +187,13 @@ func (h *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	t, err := h.store.Update(ctx, id, task.Patch(req))
+	p, err := req.toPatch()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	t, err := h.store.Update(ctx, id, p)
 
 	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return

@@ -66,13 +66,6 @@ func (rec *statusRecorder) WriteHeader(code int) {
 	rec.ResponseWriter.WriteHeader(code)
 }
 
-func (rec *statusRecorder) Write(b []byte) (int, error) {
-	if rec.status == 0 {
-		rec.status = http.StatusOK
-	}
-	return rec.ResponseWriter.Write(b)
-}
-
 func loggingMiddleware(l *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

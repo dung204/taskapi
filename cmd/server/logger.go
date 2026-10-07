@@ -8,16 +8,20 @@ import (
 	"github.com/dung204/taskapi/internal/httpapi"
 )
 
-func newLogger(cfg config) *slog.Logger {
-	switch cfg.logFormat {
-	case "text":
-		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewTextHandler(os.Stderr, nil)))
-	case "json":
-		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewJSONHandler(os.Stderr, nil)))
-	default:
-		fmt.Fprintf(os.Stderr, `undefined LOG_FORMAT: '%s'\n`, cfg.logFormat)
-		os.Exit(1)
+func newLogger(cfg config) (*slog.Logger, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(cfg.logLevel)); err != nil {
+		return nil, fmt.Errorf("invalid LOG_LEVEL: '%q': %w", cfg.logLevel, err)
 	}
 
-	return nil
+	opts := &slog.HandlerOptions{Level: level}
+
+	switch cfg.logFormat {
+	case "text":
+		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewTextHandler(os.Stderr, opts))), nil
+	case "json":
+		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewJSONHandler(os.Stderr, opts))), nil
+	default:
+		return nil, fmt.Errorf(`invalid LOG_FORMAT: '%q'`, cfg.logFormat)
+	}
 }

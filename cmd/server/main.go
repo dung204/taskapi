@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/dung204/taskapi/internal/httpapi"
@@ -15,7 +17,12 @@ import (
 
 func main() {
 	cfg := loadConfig()
-	logger := newLogger(cfg)
+
+	logger, err := newLogger(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	var store task.Store
 	var handler http.Handler
@@ -26,23 +33,28 @@ func main() {
 		handler = httpapi.NewHandler(store, logger, nil)
 
 	case "postgres":
-		if cfg.databaseURL == "" {
-			fmt.Fprintln(os.Stderr, "DATABASE_URL is empty.")
-			os.Exit(1)
-		}
+		start := time.Now()
+		db, host, dbName, err := connectDB(cfg.databaseURL)
+		elapsed := time.Since(start)
 
-		db, err := connectDB(cfg)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			logger.Error("connect to database failed", "error", err)
 			os.Exit(1)
 		}
 		defer db.Close()
+
+		logger.Info("connect to database successfully",
+			"max_open_conns", db.Stats().MaxOpenConnections,
+			"connect_duration_ms", float64(elapsed)/float64(time.Millisecond),
+			"host", host,
+			"database", dbName,
+		)
 
 		store = postgres.NewTaskStore(db)
 		handler = httpapi.NewHandler(store, logger, db)
 
 	default:
-		fmt.Fprintf(os.Stderr, `undefined STORE: '%s'\n`, cfg.store)
+		logger.Error(fmt.Sprintf("undefined STORE '%q'", cfg.store), "error", err)
 		os.Exit(1)
 	}
 
@@ -55,9 +67,23 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	err := server.ListenAndServe()
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		logger.Error("port listened failed", "error", err)
+	}
+	defer ln.Close()
+
+	logger.Info("server started",
+		"store", cfg.store,
+		"log_format", cfg.logFormat,
+		"log_level", cfg.logLevel,
+		"go_version", runtime.Version(),
+	)
+
+	err = server.Serve(ln)
 	if !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(os.Stderr, err)
+		logger.Error("server stopped with error", "error", err)
 		os.Exit(1)
 	}
+
 }

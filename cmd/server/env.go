@@ -7,6 +7,7 @@ type config struct {
 	databaseURL string
 	store       string
 	logFormat   string
+	logLevel    string
 }
 
 func getenv(key, fallback string) string {
@@ -22,5 +23,6 @@ func loadConfig() config {
 		databaseURL: getenv("DATABASE_URL", ""),
 		store:       getenv("STORE", "memory"),
 		logFormat:   getenv("LOG_FORMAT", "text"),
+		logLevel:    getenv("LOG_LEVEL", "info"),
 	}
 }
