@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/dung204/taskapi/internal/httpapi"
@@ -15,36 +19,26 @@ import (
 	"github.com/dung204/taskapi/internal/task"
 )
 
-func main() {
-	cfg := loadConfig()
-
-	logger, err := newLogger(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
+func run(ctx context.Context, cfg config, l *slog.Logger) error {
 	var store task.Store
 	var handler http.Handler
 
 	switch cfg.store {
 	case "memory":
 		store = memory.NewTaskStore()
-		handler = httpapi.NewHandler(store, logger, nil)
+		handler = httpapi.NewHandler(store, l, nil)
 
 	case "postgres":
 		if cfg.databaseURL == "" {
-			logger.Error("cannot connect to database", "error", "DATABASE_URL is empty")
-			os.Exit(1)
+			return errors.New("DATABASE_URL is required when STORE=postgres")
 		}
 
 		host, dbName, err := parseDBURL(cfg.databaseURL)
 		if err != nil {
-			logger.Error("cannot connect to database", "error", err)
-			os.Exit(1)
+			return err
 		}
 
-		logger.Debug("connecting to database",
+		l.Debug("connecting to database",
 			"host", host,
 			"database", dbName,
 		)
@@ -54,16 +48,11 @@ func main() {
 		elapsed := time.Since(start)
 
 		if err != nil {
-			logger.Error("connect to database failed",
-				"error", err,
-				"host", host,
-				"database", dbName,
-			)
-			os.Exit(1)
+			return fmt.Errorf("connect to database %q on %q: %w", dbName, host, err)
 		}
 		defer db.Close()
 
-		logger.Info("database connected",
+		l.Info("database connected",
 			"max_open_conns", db.Stats().MaxOpenConnections,
 			"connect_duration_ms", float64(elapsed)/float64(time.Millisecond),
 			"host", host,
@@ -71,14 +60,13 @@ func main() {
 		)
 
 		store = postgres.NewTaskStore(db)
-		handler = httpapi.NewHandler(store, logger, db)
+		handler = httpapi.NewHandler(store, l, db)
 
 	default:
-		logger.Error("invalid STORE", "store", cfg.store)
-		os.Exit(1)
+		return fmt.Errorf("invalid STORE '%q'", cfg.store)
 	}
 
-	server := &http.Server{
+	srv := &http.Server{
 		Addr:              ":" + cfg.port,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -87,25 +75,64 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	ln, err := net.Listen("tcp", server.Addr)
+	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
-		logger.Error("listen failed", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("open port: %w", err)
 	}
 	defer ln.Close()
 
-	logger.Info("server started",
+	l.Info("server started",
 		"port", cfg.port,
-		"addr", server.Addr,
+		"addr", ln.Addr().String(),
 		"store", cfg.store,
 		"log_format", cfg.logFormat,
 		"log_level", cfg.logLevel,
 		"go_version", runtime.Version(),
 	)
 
-	err = server.Serve(ln)
-	if !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("server stopped with error", "error", err)
+	errChan := make(chan error, 1)
+
+	go func() {
+		err = srv.Serve(ln)
+		if !errors.Is(err, http.ErrServerClosed) {
+			errChan <- err
+			close(errChan)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("Shutdown signal received")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		srv.Shutdown(shutdownCtx)
+	case err = <-errChan:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		srv.Shutdown(shutdownCtx)
+		return fmt.Errorf("serve: %w", err)
+	}
+
+	return nil
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg := loadConfig()
+
+	l, err := newLogger(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	err = run(ctx, cfg, l)
+	if err != nil {
+		l.Error("server failed", "error", err)
 		os.Exit(1)
 	}
 
