@@ -35,11 +35,13 @@ func main() {
 	case "postgres":
 		if cfg.databaseURL == "" {
 			logger.Error("cannot connect to database", "error", "DATABASE_URL is empty")
+			os.Exit(1)
 		}
 
 		host, dbName, err := parseDBURL(cfg.databaseURL)
 		if err != nil {
 			logger.Error("cannot connect to database", "error", err)
+			os.Exit(1)
 		}
 
 		logger.Debug("connecting to database",

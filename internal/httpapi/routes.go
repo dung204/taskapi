@@ -20,11 +20,8 @@ func NewHandler(
 
 	healthHandler := newHealthHandler(pinger)
 	taskHandler := newTaskHandler(store, logger)
-	panicHandler := newPanicHandler()
 
 	mux.HandleFunc("GET /healthz", healthHandler.CheckHealth)
-
-	mux.HandleFunc("GET /panic", panicHandler.TestPanic)
 
 	mux.HandleFunc("POST /tasks", taskHandler.Create)
 	mux.HandleFunc("GET /tasks", taskHandler.GetList)

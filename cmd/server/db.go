@@ -25,15 +25,6 @@ func parseDBURL(dbURL string) (host, dbName string, err error) {
 }
 
 func connectDB(dbURL string) (*sql.DB, error) {
-	// if dbURL == "" {
-	// 	return nil, errors.New("DATABASE_URL is empty")
-	// }
-
-	// host, dbName, err = parseDBURL(dbURL)
-	// if err != nil {
-	// 	return nil, host, dbName, err
-	// }
-
 	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
