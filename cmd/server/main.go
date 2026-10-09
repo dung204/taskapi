@@ -85,6 +85,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		"store", cfg.store,
 		"log_format", cfg.logFormat,
 		"log_level", cfg.logLevel,
+		"worker_enabled", cfg.workerEnabled,
 		"go_version", runtime.Version(),
 	)
 
@@ -104,13 +105,15 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		return srv.Shutdown(shutdownCtx)
 	}
 
-	workerCtx, cancelWorker := context.WithCancel(ctx)
-	wg := &sync.WaitGroup{}
-	wg.Go(func() { worker.Run(workerCtx, store, logger, cfg.workerInterval) })
-	defer func() {
-		cancelWorker()
-		wg.Wait()
-	}()
+	if cfg.workerEnabled {
+		workerCtx, cancelWorker := context.WithCancel(ctx)
+		wg := &sync.WaitGroup{}
+		wg.Go(func() { worker.Run(workerCtx, store, logger, cfg.workerInterval) })
+		defer func() {
+			cancelWorker()
+			wg.Wait()
+		}()
+	}
 
 	select {
 	case <-ctx.Done():

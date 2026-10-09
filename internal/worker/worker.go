@@ -13,13 +13,13 @@ func Run(ctx context.Context, s task.Store, l *slog.Logger, interval time.Durati
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	l.InfoContext(ctx, "worker started", "interval", interval.String())
 	for {
 		select {
 		case <-ctx.Done():
 			l.InfoContext(ctx, "worker stopped")
 			return
 		case t := <-ticker.C:
-			l.InfoContext(ctx, "worker started", "interval", interval.String())
 			scanOverdue(ctx, s, l, t)
 		}
 	}
@@ -35,12 +35,16 @@ func scanOverdue(ctx context.Context, s task.Store, l *slog.Logger, t time.Time)
 		}
 	}()
 
+	markOverdueCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
 	now := time.Now()
-	marked, err := s.MarkOverdue(ctx, t)
+	marked, err := s.MarkOverdue(markOverdueCtx, t)
 	elapsed := time.Since(now)
 
 	if err != nil {
 		l.ErrorContext(ctx, "mark overdue failed", "error", err)
+		return
 	}
 
 	level := slog.LevelDebug
@@ -50,6 +54,6 @@ func scanOverdue(ctx context.Context, s task.Store, l *slog.Logger, t time.Time)
 
 	l.Log(ctx, level, "overdue scan completed",
 		"count_updated", marked,
-		"duration_ms", elapsed,
+		"duration_ms", float64(elapsed)/float64(time.Microsecond),
 	)
 }

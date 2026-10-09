@@ -130,17 +130,12 @@ func (s *TaskStore) MarkOverdue(ctx context.Context, now time.Time) (int64, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	statusOverdue := task.StatusOverdue
 	var count int64 = 0
 
 	for id, t := range s.tasks {
-		if t.Status != task.StatusOverdue && now.After(*t.DueAt) {
-			err := t.Patch(task.Patch{
-				Status: &statusOverdue,
-			})
-			if err != nil {
-				return 0, err
-			}
+		if t.Status != task.StatusOverdue && t.Status != task.StatusDone && t.DueAt != nil && now.After(*t.DueAt) {
+			t.Status = task.StatusOverdue
+			t.UpdatedAt = now.UTC().Truncate(time.Microsecond)
 
 			s.tasks[id] = t
 			count++

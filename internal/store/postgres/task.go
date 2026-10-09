@@ -253,8 +253,8 @@ func (s *TaskStore) MarkOverdue(ctx context.Context, now time.Time) (int64, erro
 	res, err := s.db.ExecContext(
 		ctx,
 		`UPDATE "tasks"
-		SET "status" = 'overdue'
-		WHERE "status" != 'overdue' AND  "due_at" < $1
+		SET "status" = 'overdue', "updated_at" = $1
+		WHERE "status" NOT IN ('overdue', 'done') AND  "due_at" < $1
 		`,
 		now,
 	)

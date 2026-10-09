@@ -18,6 +18,7 @@ type config struct {
 	dbName         string
 	logFormat      string
 	logLevel       slog.Level
+	workerEnabled  bool
 	workerInterval time.Duration
 }
 
@@ -39,8 +40,9 @@ func isValidPort(port string) (parsedPort int, ok bool) {
 	return parsed, true
 }
 
+var errDatabaseURL = errors.New("DATABASE_URL must look like postgres://user:password@host:5432/dbname")
+
 func parseDBURL(dbURL string) (host, dbName string, err error) {
-	errDatabaseURL := errors.New("DATABASE_URL must look like postgres://user:password@host:5432/dbname")
 
 	u, err := url.Parse(dbURL)
 	if err != nil {
@@ -51,7 +53,8 @@ func parseDBURL(dbURL string) (host, dbName string, err error) {
 		return "", "", errDatabaseURL
 	}
 
-	if u.Hostname() == "" {
+	host = u.Hostname()
+	if host == "" {
 		return "", "", errDatabaseURL
 	}
 
@@ -74,22 +77,23 @@ func loadConfig(lookup lookupFunc) (config, error) {
 	errs := make([]error, 0)
 
 	rawPort := getenv(lookup, "PORT", "8080")
-	port, err := strconv.Atoi(rawPort)
-	if err != nil || port < 1 || port > 65535 {
+	port, ok := isValidPort(rawPort)
+	if !ok {
 		errs = append(errs, fmt.Errorf("PORT must be an integer between 1 and 65535, got %q", rawPort))
 	}
 
 	store := getenv(lookup, "STORE", "memory")
 	var dbURL, dbHost, dbName string
+	var dbErr error
 
 	switch {
 	case store != "postgres" && store != "memory":
-		errs = append(errs, fmt.Errorf(`MEMORY must be either "memory" or "postgres", got %q`, store))
+		errs = append(errs, fmt.Errorf(`STORE must be either "memory" or "postgres", got %q`, store))
 	case store == "postgres":
 		dbURL = getenv(lookup, "DATABASE_URL", "")
-		dbHost, dbName, err = parseDBURL(dbURL)
-		if err != nil {
-			errs = append(errs, err)
+		dbHost, dbName, dbErr = parseDBURL(dbURL)
+		if dbErr != nil {
+			errs = append(errs, dbErr)
 		}
 	}
 
@@ -101,13 +105,22 @@ func loadConfig(lookup lookupFunc) (config, error) {
 	rawLogLevel := getenv(lookup, "LOG_LEVEL", "info")
 	var logLevel slog.Level
 	if err := logLevel.UnmarshalText([]byte(rawLogLevel)); err != nil {
-		errs = append(errs, fmt.Errorf("LOG_LEVEL is not valid, got %q", logLevel))
+		errs = append(errs, fmt.Errorf("LOG_LEVEL is not valid, got %q", rawLogLevel))
 	}
 
-	rawWorkerInterval := getenv(lookup, "WORKER_INTERVAL", "30s")
-	workerInterval, err := time.ParseDuration(rawWorkerInterval)
-	if err != nil || workerInterval <= 0 {
-		errs = append(errs, fmt.Errorf(`WORKER_INTERVAL must be a positive duration like "30s", "1m" or "500ms", got %q`, rawWorkerInterval))
+	rawWorkerEnabled := getenv(lookup, "WORKER_ENABLED", "true")
+	workerEnabled, err := strconv.ParseBool(rawWorkerEnabled)
+	if err != nil {
+		errs = append(errs, fmt.Errorf(`WORKER_ENABLED must be either "true" or "false", got %q`, rawWorkerEnabled))
+	}
+
+	var workerInterval time.Duration = 0
+	if workerEnabled {
+		rawWorkerInterval := getenv(lookup, "WORKER_INTERVAL", "30s")
+		workerInterval, err = time.ParseDuration(rawWorkerInterval)
+		if err != nil || workerInterval <= 0 {
+			errs = append(errs, fmt.Errorf(`WORKER_INTERVAL must be a positive duration like "30s", "1m" or "500ms", got %q`, rawWorkerInterval))
+		}
 	}
 
 	return config{
@@ -118,6 +131,7 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		dbName:         dbName,
 		logFormat:      logFormat,
 		logLevel:       logLevel,
+		workerEnabled:  workerEnabled,
 		workerInterval: workerInterval,
 	}, errors.Join(errs...)
 }
