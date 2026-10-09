@@ -13,10 +13,7 @@ func newLogger(cfg config) (*slog.Logger, error) {
 	switch cfg.logFormat {
 	case "text":
 		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewTextHandler(os.Stderr, opts))), nil
-	case "json":
+	default:
 		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewJSONHandler(os.Stderr, opts))), nil
 	}
-
-	// unreachable
-	return nil, nil
 }

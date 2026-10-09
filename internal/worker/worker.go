@@ -54,6 +54,6 @@ func scanOverdue(ctx context.Context, s task.Store, l *slog.Logger, t time.Time)
 
 	l.Log(ctx, level, "overdue scan completed",
 		"count_updated", marked,
-		"duration_ms", float64(elapsed)/float64(time.Microsecond),
+		"duration_ms", float64(elapsed)/float64(time.Millisecond),
 	)
 }
