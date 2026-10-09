@@ -9,12 +9,7 @@ import (
 )
 
 func newLogger(cfg config) (*slog.Logger, error) {
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(cfg.logLevel)); err != nil {
-		return nil, fmt.Errorf("invalid LOG_LEVEL: '%q': %w", cfg.logLevel, err)
-	}
-
-	opts := &slog.HandlerOptions{Level: level}
+	opts := &slog.HandlerOptions{Level: cfg.logLevel}
 
 	switch cfg.logFormat {
 	case "text":

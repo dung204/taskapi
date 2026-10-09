@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
@@ -241,6 +242,32 @@ func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (tas
 	}
 
 	return t, nil
+}
+
+// MarkOverdue implements [task.Store].
+func (s *TaskStore) MarkOverdue(ctx context.Context, now time.Time) (int64, error) {
+	formatError := func(err error) error {
+		return formatPostgresError("mark overdue", "", err)
+	}
+
+	res, err := s.db.ExecContext(
+		ctx,
+		`UPDATE "tasks"
+		SET "status" = 'overdue'
+		WHERE "status" != 'overdue' AND  "due_at" < $1
+		`,
+		now,
+	)
+	if err != nil {
+		return 0, formatError(err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, formatError(err)
+	}
+
+	return affected, nil
 }
 
 func formatPostgresError(op string, taskID string, err error) error {

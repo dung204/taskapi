@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"time"
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
@@ -122,4 +123,29 @@ func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (tas
 
 	s.tasks[id] = t
 	return t, nil
+}
+
+// MarkOverdue implements [task.Store].
+func (s *TaskStore) MarkOverdue(ctx context.Context, now time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	statusOverdue := task.StatusOverdue
+	var count int64 = 0
+
+	for id, t := range s.tasks {
+		if t.Status != task.StatusOverdue && now.After(*t.DueAt) {
+			err := t.Patch(task.Patch{
+				Status: &statusOverdue,
+			})
+			if err != nil {
+				return 0, err
+			}
+
+			s.tasks[id] = t
+			count++
+		}
+	}
+
+	return count, nil
 }

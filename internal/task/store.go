@@ -25,4 +25,5 @@ type Store interface {
 	List(ctx context.Context, f ListFilter) ([]Task, error)
 	Update(ctx context.Context, id uuid.UUID, p Patch) (Task, error)
 	Delete(ctx context.Context, id uuid.UUID) error
+	MarkOverdue(ctx context.Context, now time.Time) (int64, error)
 }

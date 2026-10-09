@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,64 +19,53 @@ import (
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/store/postgres"
 	"github.com/dung204/taskapi/internal/task"
+	"github.com/dung204/taskapi/internal/worker"
 )
 
-func run(ctx context.Context, cfg config, l *slog.Logger) error {
+func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 	var store task.Store
 	var handler http.Handler
 
 	switch cfg.store {
 	case "memory":
 		store = memory.NewTaskStore()
-		handler = httpapi.NewHandler(store, l, nil)
+		handler = httpapi.NewHandler(store, logger, nil)
 
 	case "postgres":
-		if cfg.databaseURL == "" {
-			return errors.New("DATABASE_URL is required when STORE=postgres")
-		}
-
-		host, dbName, err := parseDBURL(cfg.databaseURL)
-		if err != nil {
-			return err
-		}
-
-		l.Debug("connecting to database",
-			"host", host,
-			"database", dbName,
+		logger.Debug("connecting to database",
+			"host", cfg.dbHost,
+			"database", cfg.dbName,
 		)
 
 		start := time.Now()
-		db, err := connectDB(cfg.databaseURL)
+		db, err := connectDB(cfg.dbURL)
 		elapsed := time.Since(start)
 
 		if err != nil {
-			return fmt.Errorf("connect to database %q on %q: %w", dbName, host, err)
+			return fmt.Errorf("connect to database %q on %q: %w", cfg.dbName, cfg.dbHost, err)
 		}
 		defer func() {
 			if err := db.Close(); err != nil {
-				l.Warn("database close failed", "error", err)
+				logger.Warn("database close failed", "error", err)
 				return
 			}
 
-			l.Info("database closed")
+			logger.Info("database closed")
 		}()
 
-		l.Info("database connected",
+		logger.Info("database connected",
 			"max_open_conns", db.Stats().MaxOpenConnections,
 			"connect_duration_ms", float64(elapsed)/float64(time.Millisecond),
-			"host", host,
-			"database", dbName,
+			"host", cfg.dbHost,
+			"database", cfg.dbName,
 		)
 
 		store = postgres.NewTaskStore(db)
-		handler = httpapi.NewHandler(store, l, db)
-
-	default:
-		return fmt.Errorf("invalid STORE %q", cfg.store)
+		handler = httpapi.NewHandler(store, logger, db)
 	}
 
 	srv := &http.Server{
-		Addr:              ":" + cfg.port,
+		Addr:              ":" + strconv.Itoa(cfg.port),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -88,7 +79,7 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 	}
 	defer ln.Close()
 
-	l.Info("server started",
+	logger.Info("server started",
 		"port", cfg.port,
 		"addr", ln.Addr().String(),
 		"store", cfg.store,
@@ -106,27 +97,35 @@ func run(ctx context.Context, cfg config, l *slog.Logger) error {
 	}()
 
 	shutdown := func(srv *http.Server) error {
-		l.Info("shutting down server")
+		logger.Info("shutting down server")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		return srv.Shutdown(shutdownCtx)
 	}
 
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	wg := &sync.WaitGroup{}
+	wg.Go(func() { worker.Run(workerCtx, store, logger, cfg.workerInterval) })
+	defer func() {
+		cancelWorker()
+		wg.Wait()
+	}()
+
 	select {
 	case <-ctx.Done():
-		l.Info("shutdown signal received", "cause", context.Cause(ctx))
+		logger.Info("shutdown signal received", "cause", context.Cause(ctx))
 
 		err := shutdown(srv)
 		if err != nil {
 			return fmt.Errorf("shutdown: %w", err)
 		}
-		l.Info("server stopped")
+		logger.Info("server stopped")
 		return nil
 	case err = <-errChan:
 		shutdownErr := shutdown(srv)
 		if shutdownErr != nil {
-			l.Error("shutdown failed", "error", shutdownErr)
+			logger.Error("shutdown failed", "error", shutdownErr)
 		}
 		return fmt.Errorf("serve: %w", err)
 	}
@@ -140,7 +139,11 @@ func main() {
 		stop()
 	}()
 
-	cfg := loadConfig()
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	l, err := newLogger(cfg)
 	if err != nil {
