@@ -17,15 +17,16 @@ type scanner interface {
 }
 
 func scanToTask(s scanner, t *task.Task) error {
-	return s.Scan(
-		&t.ID,
-		&t.Title,
-		&t.Description,
-		&t.Status,
-		&t.DueAt,
-		&t.CreatedAt,
-		&t.UpdatedAt,
-	)
+	if err := s.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.DueAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return err
+	}
+
+	t.CreatedAt = t.CreatedAt.UTC()
+	t.UpdatedAt = t.UpdatedAt.UTC()
+	if t.DueAt != nil {
+		t.DueAt = new(t.DueAt.UTC())
+	}
+	return nil
 }
 
 type rowQuerier interface {

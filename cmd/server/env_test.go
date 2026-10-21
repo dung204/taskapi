@@ -64,6 +64,7 @@ func TestLoadConfig(t *testing.T) {
 		wantErr []string
 	}{
 		{name: "defaults", want: defaultConfig()},
+		{name: "field with empty value", env: map[string]string{"PORT": "", "LOG_FORMAT": "json"}, want: cfgWith(func(c *config) { c.logFormat = "json" })},
 
 		{name: "valid PORT", env: map[string]string{"PORT": "9000"}, want: cfgWith(func(c *config) { c.port = 9000 })},
 		{name: "valid STORE", env: map[string]string{"STORE": "memory"}, want: cfgWith(func(c *config) { c.store = "memory" })},
@@ -76,6 +77,7 @@ func TestLoadConfig(t *testing.T) {
 		{name: "invalid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "loud"}, wantErr: []string{"LOG_LEVEL", "loud"}},
 		{name: "invalid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "yaml"}, wantErr: []string{"LOG_FORMAT", "yaml"}},
 		{name: "invalid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "maybe"}, wantErr: []string{"WORKER_ENABLED", "maybe"}},
+		{name: "multiple errors", env: map[string]string{"PORT": "abc", "STORE": "foo", "LOG_LEVEL": "loud"}, wantErr: []string{"PORT", "abc", "STORE", "foo", "LOG_LEVEL", "loud"}},
 
 		{
 			name: "STORE=postgres with valid DATABASE_URL",
@@ -157,6 +159,7 @@ func TestIsValidPort(t *testing.T) {
 	}{
 		{"1", 1, true},
 		{"65535", 65535, true},
+		{"65536", 0, false},
 		{"0", 0, false},
 		{"-1", 0, false},
 		{"abc", 0, false},
@@ -187,12 +190,14 @@ func TestParseDBURL(t *testing.T) {
 		wantErr    bool
 	}{
 		{name: "valid URL", dbURL: "postgres://u:p@localhost:5432/tasks", wantHost: "localhost", wantDBName: "tasks"},
+		{name: "postgresql scheme", dbURL: "postgresql://u:p@localhost:5432/tasks", wantHost: "localhost", wantDBName: "tasks"},
 		{name: "unparseable URL", dbURL: "postgres://u:p@localhost:abc/tasks", wantErr: true},
 		{name: "wrong scheme", dbURL: "https://u:p@localhost:5432/tasks", wantErr: true},
 		{name: "missing host", dbURL: "postgres://u:p@:5432/tasks", wantErr: true},
 		{name: "missing port", dbURL: "postgres://u:p@localhost/tasks", wantHost: "localhost", wantDBName: "tasks"},
 		{name: "port out of range", dbURL: "postgres://u:p@localhost:65536/tasks", wantErr: true},
 		{name: "database name contains slash", dbURL: "postgres://u:p@localhost:5432/tasks/prod", wantErr: true},
+		{name: "database name contains slash in the end", dbURL: "postgres://u:p@localhost:5432/tasks/", wantErr: true},
 		{name: "missing database name", dbURL: "postgres://u:p@localhost:5432", wantErr: true},
 	}
 

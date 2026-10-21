@@ -514,7 +514,7 @@ func TestUpdate(t *testing.T) {
 			})),
 		},
 		{
-			// 10:00 at +07:00 is 03:00 UTC; the stored value is normalized to UTC.
+			// 10:00 at +07:00 is 03:00 UTC
 			name:           "valid due_at with timezone offset",
 			id:             validID.String(),
 			body:           `{"due_at":"2026-12-31T10:00:00+07:00"}`,

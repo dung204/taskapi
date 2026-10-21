@@ -20,8 +20,8 @@ var testUpdatedAtAfter = testUpdatedAtBefore.Add(30 * time.Second)
 func defaultTask() task.Task {
 	return task.Task{
 		ID:          testID,
-		Title:       "task.Task title",
-		Description: "task.Task description",
+		Title:       "Task title",
+		Description: "Task description",
 		Status:      task.StatusTodo,
 		DueAt:       nil,
 		CreatedAt:   testCreatedAt.UTC().Truncate(time.Microsecond),
@@ -192,8 +192,8 @@ func TestPatch(t *testing.T) {
 				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
 			})),
 			patch: task.Patch{
-				Title:       new("task.Task title"),
-				Description: new("task.Task description"),
+				Title:       new("Task title"),
+				Description: new("Task description"),
 				Status:      new(task.StatusTodo),
 				DueAt:       &testDueAt,
 			},
@@ -205,7 +205,7 @@ func TestPatch(t *testing.T) {
 		{
 			name: "title differing only by surrounding whitespace changes nothing",
 			patch: task.Patch{
-				Title: new("  task.Task title  "),
+				Title: new("  Task title  "),
 			},
 			wantTask: defaultTask(),
 		},
@@ -250,7 +250,7 @@ func TestPatch(t *testing.T) {
 			name: "now with timezone and nanoseconds is ignored when nothing changes",
 			now:  time.Date(2026, 10, 1, 0, 0, 30, 123456789, time.FixedZone("+07:00", 7*60*60)),
 			patch: task.Patch{
-				Title: new("task.Task title"),
+				Title: new("Task title"),
 			},
 			wantTask: defaultTask(),
 		},
@@ -277,16 +277,16 @@ func TestPatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			task := defaultTask()
+			got := defaultTask()
 			if tt.start != nil {
-				task = *tt.start
+				got = *tt.start
 			}
 			now := testUpdatedAtAfter
 			if !tt.now.IsZero() {
 				now = tt.now
 			}
-			before := task
-			gotErr := task.Patch(tt.patch, now)
+			before := got
+			gotErr := got.Patch(tt.patch, now)
 
 			if tt.wantErr != nil {
 				if gotErr == nil {
@@ -298,7 +298,7 @@ func TestPatch(t *testing.T) {
 				}
 
 				// A failed patch must leave the task untouched.
-				tasktest.CheckTask(t, task, before)
+				tasktest.CheckTask(t, got, before)
 
 				return
 			}
@@ -307,7 +307,7 @@ func TestPatch(t *testing.T) {
 				t.Fatalf("task.Patch() unexpected error: %v", gotErr)
 			}
 
-			tasktest.CheckTask(t, task, tt.wantTask)
+			tasktest.CheckTask(t, got, tt.wantTask)
 		})
 	}
 }
@@ -337,10 +337,10 @@ func TestNew(t *testing.T) {
 		{
 			name: "defaults with valid title",
 			params: task.NewParams{
-				Title: "task.Task title",
+				Title: "Task title",
 			},
 			wantTask: taskWith(func(t *task.Task) {
-				t.Title = "task.Task title"
+				t.Title = "Task title"
 				t.Description = ""
 				t.Status = task.StatusTodo
 				t.DueAt = nil

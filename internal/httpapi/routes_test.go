@@ -108,6 +108,7 @@ func TestHandler(t *testing.T) {
 			logtest.Want{
 				Level: slog.LevelError,
 				Msg:   "request completed",
+				Attrs: map[string]any{"status": int64(500)},
 			},
 		)
 	})
