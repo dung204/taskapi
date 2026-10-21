@@ -197,9 +197,17 @@ func TestRun(t *testing.T) {
 		}
 		logtest.CheckLogRecord(t, recoveredRecs[0], wantRecoveredRec)
 
-		completedRecs := rec.Find(wantCompletedRec.Msg)
+		// Later ticks may also log "overdue scan completed" (with count_updated = 0)
+		// before cancel() lands, so only look at the scan that marked 3 tasks.
+		var completedRecs []slog.Record
+		for _, r := range rec.Find(wantCompletedRec.Msg) {
+			v, ok := logtest.Attrs(r)["count_updated"]
+			if ok && v.Kind() == slog.KindInt64 && v.Int64() == 3 {
+				completedRecs = append(completedRecs, r)
+			}
+		}
 		if len(completedRecs) != 1 {
-			t.Fatalf("%q log records count = %d, want 1", wantCompletedRec.Msg, len(completedRecs))
+			t.Fatalf("%q log records with count_updated = 3 count = %d, want 1", wantCompletedRec.Msg, len(completedRecs))
 		}
 		logtest.CheckLogRecord(t, completedRecs[0], wantCompletedRec)
 	})

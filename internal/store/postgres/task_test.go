@@ -27,7 +27,7 @@ func newPGStore(t *testing.T, url string) task.Store {
 	t.Helper()
 	db, err := sql.Open("pgx", url)
 	if err != nil {
-		t.Errorf("connect to db: %v", err)
+		t.Fatalf("connect to db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 

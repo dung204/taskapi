@@ -91,7 +91,7 @@ func MustAttr[T any](t *testing.T, attrs map[string]slog.Value, key string) T {
 	got, ok := v.Any().(T)
 	if !ok {
 		var zero T
-		t.Fatalf("attr %q is %T(%q), want type %T", key, v.Any(), v.Any(), zero)
+		t.Fatalf("attr %q is %T(%v), want type %T", key, v.Any(), v.Any(), zero)
 	}
 	return got
 }

@@ -79,7 +79,9 @@ func New(params NewParams, now time.Time) (*Task, error) {
 	return task, nil
 }
 
+// Patch applies p atomically: if any field is invalid, t is left unchanged.
 func (t *Task) Patch(p Patch, now time.Time) error {
+	next := *t
 	changeUpdatedAt := false
 
 	title := p.Title
@@ -90,8 +92,8 @@ func (t *Task) Patch(p Patch, now time.Time) error {
 			return fmt.Errorf("%w: title must have at least 1 and at most 200 characters", ErrInvalidInput)
 		}
 
-		if t.Title != trimmed {
-			t.Title = trimmed
+		if next.Title != trimmed {
+			next.Title = trimmed
 			changeUpdatedAt = true
 		}
 	}
@@ -102,8 +104,8 @@ func (t *Task) Patch(p Patch, now time.Time) error {
 			return fmt.Errorf("%w: description must have at most 2000 characters", ErrInvalidInput)
 		}
 
-		if t.Description != *description {
-			t.Description = *description
+		if next.Description != *description {
+			next.Description = *description
 			changeUpdatedAt = true
 		}
 	}
@@ -114,8 +116,8 @@ func (t *Task) Patch(p Patch, now time.Time) error {
 			return ErrInvalidPatchStatus
 		}
 
-		if t.Status != *status {
-			t.Status = *status
+		if next.Status != *status {
+			next.Status = *status
 			changeUpdatedAt = true
 		}
 	}
@@ -123,15 +125,16 @@ func (t *Task) Patch(p Patch, now time.Time) error {
 	if p.DueAt != nil {
 		patch := p.DueAt.UTC().Truncate(time.Microsecond)
 
-		if t.DueAt == nil || t.DueAt.UTC().Truncate(time.Microsecond).Compare(patch) != 0 {
-			t.DueAt = &patch
+		if next.DueAt == nil || next.DueAt.UTC().Truncate(time.Microsecond).Compare(patch) != 0 {
+			next.DueAt = &patch
 			changeUpdatedAt = true
 		}
 	}
 
 	if changeUpdatedAt {
-		t.UpdatedAt = now.UTC().Truncate(time.Microsecond)
+		next.UpdatedAt = now.UTC().Truncate(time.Microsecond)
 	}
 
+	*t = next
 	return nil
 }

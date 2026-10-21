@@ -38,6 +38,8 @@ func taskWith(mod func(*task.Task)) task.Task {
 func TestPatch(t *testing.T) {
 	tests := []struct {
 		name     string
+		start    *task.Task // task to patch, defaults to defaultTask()
+		now      time.Time  // time passed to Patch(), defaults to testUpdatedAtAfter
 		patch    task.Patch
 		wantTask task.Task
 		wantErr  error
@@ -115,12 +117,176 @@ func TestPatch(t *testing.T) {
 			},
 			wantErr: task.ErrInvalidPatchStatus,
 		},
+
+		{
+			name: "title with exactly 200 chars",
+			patch: task.Patch{
+				Title: new(strings.Repeat("a", 200)),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Title = strings.Repeat("a", 200)
+				t.UpdatedAt = testUpdatedAtAfter.UTC().Truncate(time.Microsecond)
+			}),
+		},
+		{
+			name: "title with exactly 200 multi-byte chars",
+			patch: task.Patch{
+				Title: new(strings.Repeat("é", 200)),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Title = strings.Repeat("é", 200)
+				t.UpdatedAt = testUpdatedAtAfter.UTC().Truncate(time.Microsecond)
+			}),
+		},
+		{
+			name: "title with 200 chars plus surrounding spaces is trimmed before counting",
+			patch: task.Patch{
+				Title: new("  " + strings.Repeat("a", 200) + "  "),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Title = strings.Repeat("a", 200)
+				t.UpdatedAt = testUpdatedAtAfter.UTC().Truncate(time.Microsecond)
+			}),
+		},
+		{
+			name: "title with only whitespace",
+			patch: task.Patch{
+				Title: new(" \t\n  "),
+			},
+			wantErr: task.ErrInvalidInput,
+		},
+		{
+			name: "title is trimmed",
+			patch: task.Patch{
+				Title: new("  Updated task title \n"),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Title = "Updated task title"
+				t.UpdatedAt = testUpdatedAtAfter.UTC().Truncate(time.Microsecond)
+			}),
+		},
+		{
+			name: "description with exactly 2000 chars",
+			patch: task.Patch{
+				Description: new(strings.Repeat("a", 2000)),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Description = strings.Repeat("a", 2000)
+				t.UpdatedAt = testUpdatedAtAfter.UTC().Truncate(time.Microsecond)
+			}),
+		},
+		{
+			name: "description with exactly 2000 multi-byte chars",
+			patch: task.Patch{
+				Description: new(strings.Repeat("é", 2000)),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Description = strings.Repeat("é", 2000)
+				t.UpdatedAt = testUpdatedAtAfter.UTC().Truncate(time.Microsecond)
+			}),
+		},
+
+		{
+			name: "non-empty patch identical to the task changes nothing",
+			start: new(taskWith(func(t *task.Task) {
+				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
+			})),
+			patch: task.Patch{
+				Title:       new("task.Task title"),
+				Description: new("task.Task description"),
+				Status:      new(task.StatusTodo),
+				DueAt:       &testDueAt,
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
+				t.UpdatedAt = testUpdatedAtBefore.UTC().Truncate(time.Microsecond)
+			}),
+		},
+		{
+			name: "title differing only by surrounding whitespace changes nothing",
+			patch: task.Patch{
+				Title: new("  task.Task title  "),
+			},
+			wantTask: defaultTask(),
+		},
+		{
+			name: "due_at in another timezone for the same instant changes nothing",
+			start: new(taskWith(func(t *task.Task) {
+				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
+			})),
+			patch: task.Patch{
+				DueAt: new(testDueAt.In(time.FixedZone("+07:00", 7*60*60))),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
+			}),
+		},
+		{
+			name: "due_at differing only below a microsecond changes nothing",
+			start: new(taskWith(func(t *task.Task) {
+				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
+			})),
+			patch: task.Patch{
+				DueAt: new(testDueAt.Add(500 * time.Nanosecond)),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.DueAt = new(testDueAt.UTC().Truncate(time.Microsecond))
+			}),
+		},
+
+		{
+			// 2026-10-01T00:00:30.123456789+07:00 is 2026-09-30T17:00:30.123456Z
+			name: "now with timezone and nanoseconds is normalized to UTC microseconds",
+			now:  time.Date(2026, 10, 1, 0, 0, 30, 123456789, time.FixedZone("+07:00", 7*60*60)),
+			patch: task.Patch{
+				Title: new("Updated task title"),
+			},
+			wantTask: taskWith(func(t *task.Task) {
+				t.Title = "Updated task title"
+				t.UpdatedAt = time.Date(2026, 9, 30, 17, 0, 30, 123456000, time.UTC)
+			}),
+		},
+		{
+			name: "now with timezone and nanoseconds is ignored when nothing changes",
+			now:  time.Date(2026, 10, 1, 0, 0, 30, 123456789, time.FixedZone("+07:00", 7*60*60)),
+			patch: task.Patch{
+				Title: new("task.Task title"),
+			},
+			wantTask: defaultTask(),
+		},
+
+		{
+			name: "valid title then invalid description is not applied",
+			patch: task.Patch{
+				Title:       new("Updated task title"),
+				Description: new(strings.Repeat("a", 2001)),
+			},
+			wantErr: task.ErrInvalidInput,
+		},
+		{
+			name: "valid fields then invalid status is not applied",
+			patch: task.Patch{
+				Title:       new("Updated task title"),
+				Description: new("Updated task description"),
+				Status:      new(task.StatusOverdue),
+				DueAt:       &testDueAt,
+			},
+			wantErr: task.ErrInvalidPatchStatus,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			task := defaultTask()
-			gotErr := task.Patch(tt.patch, testUpdatedAtAfter)
+			if tt.start != nil {
+				task = *tt.start
+			}
+			now := testUpdatedAtAfter
+			if !tt.now.IsZero() {
+				now = tt.now
+			}
+			before := task
+			gotErr := task.Patch(tt.patch, now)
 
 			if tt.wantErr != nil {
 				if gotErr == nil {
@@ -130,6 +296,9 @@ func TestPatch(t *testing.T) {
 				if !errors.Is(gotErr, tt.wantErr) {
 					t.Fatalf("task.Patch() error = %v, want error matching %v", gotErr, tt.wantErr)
 				}
+
+				// A failed patch must leave the task untouched.
+				tasktest.CheckTask(t, task, before)
 
 				return
 			}
@@ -143,9 +312,24 @@ func TestPatch(t *testing.T) {
 	}
 }
 
+// newTaskWith returns the task New() creates from just a title at testCreatedAt, modified by mod.
+func newTaskWith(mod func(*task.Task)) task.Task {
+	t := taskWith(func(t *task.Task) {
+		t.Title = "Task title"
+		t.Description = ""
+		t.Status = task.StatusTodo
+		t.DueAt = nil
+		t.CreatedAt = testCreatedAt.UTC().Truncate(time.Microsecond)
+		t.UpdatedAt = testCreatedAt.UTC().Truncate(time.Microsecond)
+	})
+	mod(&t)
+	return t
+}
+
 func TestNew(t *testing.T) {
 	tests := []struct {
 		name     string
+		now      time.Time // time passed to New(), defaults to testCreatedAt
 		params   task.NewParams
 		wantTask task.Task
 		wantErr  error
@@ -171,11 +355,62 @@ func TestNew(t *testing.T) {
 			},
 			wantErr: task.ErrInvalidInput,
 		},
+		{
+			name:   "title with exactly 200 chars",
+			params: task.NewParams{Title: strings.Repeat("a", 200)},
+			wantTask: newTaskWith(func(t *task.Task) {
+				t.Title = strings.Repeat("a", 200)
+			}),
+		},
+		{
+			name:    "title with 201 chars",
+			params:  task.NewParams{Title: strings.Repeat("a", 201)},
+			wantErr: task.ErrInvalidInput,
+		},
+		{
+			name:    "title with only whitespace",
+			params:  task.NewParams{Title: " \t\n  "},
+			wantErr: task.ErrInvalidInput,
+		},
+		{
+			name:   "title is trimmed",
+			params: task.NewParams{Title: "  Task title \n"},
+			wantTask: newTaskWith(func(t *task.Task) {
+				t.Title = "Task title"
+			}),
+		},
+		{
+			name:   "description with exactly 2000 chars",
+			params: task.NewParams{Title: "Task title", Description: new(strings.Repeat("a", 2000))},
+			wantTask: newTaskWith(func(t *task.Task) {
+				t.Description = strings.Repeat("a", 2000)
+			}),
+		},
+		{
+			name:    "description with 2001 chars",
+			params:  task.NewParams{Title: "Task title", Description: new(strings.Repeat("a", 2001))},
+			wantErr: task.ErrInvalidInput,
+		},
+		{
+			// 2026-10-01T00:00:30.123456789+07:00 is 2026-09-30T17:00:30.123456Z
+			name:   "now with timezone and nanoseconds is normalized to UTC microseconds",
+			now:    time.Date(2026, 10, 1, 0, 0, 30, 123456789, time.FixedZone("+07:00", 7*60*60)),
+			params: task.NewParams{Title: "Task title"},
+			wantTask: newTaskWith(func(t *task.Task) {
+				at := time.Date(2026, 9, 30, 17, 0, 30, 123456000, time.UTC)
+				t.CreatedAt = at
+				t.UpdatedAt = at
+			}),
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotTask, gotErr := task.New(tt.params, testCreatedAt)
+			now := testCreatedAt
+			if !tt.now.IsZero() {
+				now = tt.now
+			}
+			gotTask, gotErr := task.New(tt.params, now)
 
 			if tt.wantErr != nil {
 				if gotErr == nil {

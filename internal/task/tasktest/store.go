@@ -2,12 +2,26 @@ package tasktest
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
 )
+
+func checkTasks(t *testing.T, got, want []task.Task) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		CheckTask(t, got[i], want[i])
+	}
+}
 
 func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -28,6 +42,125 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 
 		return created
 	}
+
+	// newestFirst sorts tasks by ID descending, which is the order List must return.
+	newestFirst := func(tasks []task.Task) []task.Task {
+		sorted := slices.Clone(tasks)
+		slices.SortFunc(sorted, func(a, b task.Task) int { return b.ID.Compare(a.ID) })
+		return sorted
+	}
+
+	t.Run("Get returns ErrNotFound for unknown id", func(t *testing.T) {
+		s := newStore(t)
+
+		_, err := s.Get(context.Background(), uuid.NewV7())
+		if !errors.Is(err, task.ErrNotFound) {
+			t.Errorf("err = %v, want %v", err, task.ErrNotFound)
+		}
+	})
+
+	t.Run("Update returns ErrNotFound for unknown id", func(t *testing.T) {
+		s := newStore(t)
+
+		title := "new title"
+		_, err := s.Update(context.Background(), uuid.NewV7(), task.Patch{Title: &title})
+		if !errors.Is(err, task.ErrNotFound) {
+			t.Errorf("err = %v, want %v", err, task.ErrNotFound)
+		}
+	})
+
+	t.Run("Delete returns ErrNotFound for unknown id", func(t *testing.T) {
+		s := newStore(t)
+
+		err := s.Delete(context.Background(), uuid.NewV7())
+		if !errors.Is(err, task.ErrNotFound) {
+			t.Errorf("err = %v, want %v", err, task.ErrNotFound)
+		}
+	})
+
+	t.Run("Delete removes the task", func(t *testing.T) {
+		s := newStore(t)
+		created := seed(t, s, task.StatusTodo, nil)
+
+		if err := s.Delete(context.Background(), created.ID); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+
+		_, err := s.Get(context.Background(), created.ID)
+		if !errors.Is(err, task.ErrNotFound) {
+			t.Errorf("Get after Delete: err = %v, want %v", err, task.ErrNotFound)
+		}
+	})
+
+	t.Run("List orders by id descending", func(t *testing.T) {
+		s := newStore(t)
+
+		var all []task.Task
+		for range 5 {
+			all = append(all, seed(t, s, task.StatusTodo, nil))
+		}
+
+		got, err := s.List(context.Background(), task.ListFilter{Limit: 10})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+
+		checkTasks(t, got, newestFirst(all))
+	})
+
+	t.Run("List applies offset and limit", func(t *testing.T) {
+		s := newStore(t)
+
+		var all []task.Task
+		for range 5 {
+			all = append(all, seed(t, s, task.StatusTodo, nil))
+		}
+		want := newestFirst(all)
+
+		tests := []struct {
+			name   string
+			filter task.ListFilter
+			want   []task.Task
+		}{
+			{"limit only", task.ListFilter{Limit: 2}, want[:2]},
+			{"offset and limit", task.ListFilter{Offset: 1, Limit: 2}, want[1:3]},
+			{"limit past the end", task.ListFilter{Offset: 3, Limit: 10}, want[3:]},
+			{"offset past the end", task.ListFilter{Offset: 10, Limit: 10}, nil},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := s.List(context.Background(), tt.filter)
+				if err != nil {
+					t.Fatalf("List: %v", err)
+				}
+
+				checkTasks(t, got, tt.want)
+			})
+		}
+	})
+
+	t.Run("List filters by status", func(t *testing.T) {
+		s := newStore(t)
+
+		var doing []task.Task
+		seed(t, s, task.StatusTodo, nil)
+		doing = append(doing, seed(t, s, task.StatusDoing, nil))
+		seed(t, s, task.StatusDone, nil)
+		doing = append(doing, seed(t, s, task.StatusDoing, nil))
+
+		got, err := s.List(context.Background(), task.ListFilter{Limit: 10, Status: task.StatusDoing})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		checkTasks(t, got, newestFirst(doing))
+
+		got, err = s.List(context.Background(), task.ListFilter{Limit: 10, Status: task.StatusOverdue})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		checkTasks(t, got, nil)
+	})
 
 	t.Run("MarkOverdue skips done tasks", func(t *testing.T) {
 		s := newStore(t)
@@ -151,5 +284,17 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 		want.UpdatedAt = got.UpdatedAt
 
 		CheckTask(t, got, want)
+	})
+
+	t.Run("create then get again", func(t *testing.T) {
+		s := newStore(t)
+		created := seed(t, s, task.StatusTodo, nil)
+
+		got, err := s.Get(context.Background(), created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+
+		CheckTask(t, got, created)
 	})
 }

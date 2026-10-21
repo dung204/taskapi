@@ -3,6 +3,7 @@ package tasktest
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/dung204/taskapi/internal/task"
 )
@@ -21,7 +22,15 @@ func ptrToStr[T any](p *T) string {
 	return fmt.Sprint(*p)
 }
 
+func timePtrEqual(a, b *time.Time) bool {
+	if a != nil && b != nil {
+		return a.Equal(*b)
+	}
+	return a == b
+}
+
 func CheckTask(t *testing.T, got task.Task, want task.Task) (hasError bool) {
+	t.Helper()
 	hasError = false
 
 	if got.ID != want.ID {
@@ -40,15 +49,15 @@ func CheckTask(t *testing.T, got task.Task, want task.Task) (hasError bool) {
 		t.Errorf("status = %q, want %q", got.Status, want.Status)
 		hasError = true
 	}
-	if got.CreatedAt != want.CreatedAt {
+	if !got.CreatedAt.Equal(want.CreatedAt) {
 		t.Errorf("created_at = %v, want %v", got.CreatedAt, want.CreatedAt)
 		hasError = true
 	}
-	if got.UpdatedAt != want.UpdatedAt {
+	if !got.UpdatedAt.Equal(want.UpdatedAt) {
 		t.Errorf("updated_at = %v, want %v", got.UpdatedAt, want.UpdatedAt)
 		hasError = true
 	}
-	if !ptrEqual(got.DueAt, want.DueAt) {
+	if !timePtrEqual(got.DueAt, want.DueAt) {
 		t.Errorf("due_at = %v, want %v", ptrToStr(got.DueAt), ptrToStr(want.DueAt))
 		hasError = true
 	}
@@ -57,6 +66,7 @@ func CheckTask(t *testing.T, got task.Task, want task.Task) (hasError bool) {
 }
 
 func CheckPatch(t *testing.T, got task.Patch, want task.Patch) (hasError bool) {
+	t.Helper()
 	hasError = false
 
 	if !ptrEqual(got.Title, want.Title) {
@@ -71,8 +81,8 @@ func CheckPatch(t *testing.T, got task.Patch, want task.Patch) (hasError bool) {
 		t.Errorf("status = %q, want %q", ptrToStr(got.Status), ptrToStr(want.Status))
 		hasError = true
 	}
-	if !ptrEqual(got.DueAt, want.DueAt) {
-		t.Errorf("status = %v, want %v", ptrToStr(got.DueAt), ptrToStr(want.DueAt))
+	if !timePtrEqual(got.DueAt, want.DueAt) {
+		t.Errorf("due_at = %v, want %v", ptrToStr(got.DueAt), ptrToStr(want.DueAt))
 		hasError = true
 	}
 

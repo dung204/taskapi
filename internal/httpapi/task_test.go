@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 	"uuid"
 
+	"github.com/dung204/taskapi/internal/logtest"
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/task/tasktest"
@@ -181,6 +184,12 @@ func TestGetList_Filter(t *testing.T) {
 			wantFilter:     listFilterWith(func(lf *task.ListFilter) { lf.Limit = 100 }),
 		},
 		{
+			name:           "limit exceeds 100",
+			params:         "?limit=101",
+			wantStatusCode: http.StatusOK,
+			wantFilter:     listFilterWith(func(lf *task.ListFilter) { lf.Limit = 100 }),
+		},
+		{
 			name:            "non-numerical limit",
 			params:          "?limit=abc",
 			wantStatusCode:  http.StatusBadRequest,
@@ -309,10 +318,21 @@ func TestGetList_Paging(t *testing.T) {
 			res := rec.Result()
 			defer res.Body.Close()
 
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("status code = %d, want %d", res.StatusCode, http.StatusOK)
+			}
+
 			gotTasks := decodeResponseBody[[]task.Task](t, res.Body)
+
+			// An empty page must be encoded as [] rather than null:
+			// [] decodes to an empty non-nil slice, while null decodes to nil.
+			if len(tt.wantIDs) == 0 && gotTasks == nil {
+				t.Fatalf("body decoded to a nil slice, want an empty array [] (not null)")
+			}
+
 			gotIDs := make([]uuid.UUID, 0)
-			for _, t := range gotTasks {
-				gotIDs = append(gotIDs, t.ID)
+			for _, tsk := range gotTasks {
+				gotIDs = append(gotIDs, tsk.ID)
 			}
 
 			if !slices.Equal(gotIDs, tt.wantIDs) {
@@ -480,6 +500,61 @@ func TestUpdate(t *testing.T) {
 			wantID:         validID,
 			wantPatch:      task.Patch{Description: new("")},
 			wantTask:       new(taskWith(func(t *task.Task) { t.Description = "" })),
+		},
+		{
+			name:           "valid due_at in UTC",
+			id:             validID.String(),
+			body:           `{"due_at":"2026-12-31T10:00:00Z"}`,
+			wantStatusCode: http.StatusOK,
+			wantCalled:     true,
+			wantID:         validID,
+			wantPatch:      task.Patch{DueAt: new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))},
+			wantTask: new(taskWith(func(t *task.Task) {
+				t.DueAt = new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))
+			})),
+		},
+		{
+			// 10:00 at +07:00 is 03:00 UTC; the stored value is normalized to UTC.
+			name:           "valid due_at with timezone offset",
+			id:             validID.String(),
+			body:           `{"due_at":"2026-12-31T10:00:00+07:00"}`,
+			wantStatusCode: http.StatusOK,
+			wantCalled:     true,
+			wantID:         validID,
+			wantPatch:      task.Patch{DueAt: new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))},
+			wantTask: new(taskWith(func(t *task.Task) {
+				t.DueAt = new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))
+			})),
+		},
+		{
+			name:           "valid status todo",
+			id:             validID.String(),
+			body:           `{"status":"todo"}`,
+			wantStatusCode: http.StatusOK,
+			wantCalled:     true,
+			wantID:         validID,
+			wantPatch:      task.Patch{Status: new(task.StatusTodo)},
+			wantTask:       new(taskWith(func(t *task.Task) { t.Status = task.StatusTodo })),
+		},
+		{
+			name:           "valid status doing",
+			id:             validID.String(),
+			body:           `{"status":"doing"}`,
+			wantStatusCode: http.StatusOK,
+			wantCalled:     true,
+			wantID:         validID,
+			wantPatch:      task.Patch{Status: new(task.StatusDoing)},
+			wantTask:       new(taskWith(func(t *task.Task) { t.Status = task.StatusDoing })),
+		},
+		{
+			name:           "valid status done",
+			id:             validID.String(),
+			body:           `{"status":"done"}`,
+			wantStatusCode: http.StatusOK,
+			wantCalled:     true,
+			wantID:         validID,
+			wantPatch:      task.Patch{Status: new(task.StatusDone)},
+			wantTask:       new(taskWith(func(t *task.Task) { t.Status = task.StatusDone })),
 		},
 		{
 			name:           "empty object leaves unchanged",
@@ -692,23 +767,72 @@ func TestHandleStoreError(t *testing.T) {
 		{"delete", http.MethodDelete, "/tasks/" + validID.String(), nil},
 	}
 
+	errUnavailable := fmt.Errorf("get task: %w", task.ErrServiceUnavailable)
+
 	errCases := []struct {
 		name            string
 		err             error
 		wantStatusCode  int
 		wantErrContains []string
 		wantHidden      []string
+		wantEmptyBody   bool           // the handler writes nothing (client went away)
+		wantLogs        []logtest.Want // records logged by handleStoreError, before "request completed"
 	}{
-		{"generic error", errors.New("oops"), http.StatusInternalServerError, []string{"internal"}, []string{"oops"}},
-		{name: "deadline exceeded", err: context.DeadlineExceeded, wantStatusCode: http.StatusServiceUnavailable, wantErrContains: []string{"service unavailable"}},
-		{"wrapped deadline", fmt.Errorf("get task: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, []string{"service unavailable"}, []string{"get task"}},
+		{
+			name:            "generic error",
+			err:             errors.New("oops"),
+			wantStatusCode:  http.StatusInternalServerError,
+			wantErrContains: []string{"internal"},
+			wantHidden:      []string{"oops"},
+			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "oops"}},
+		},
+		{
+			name:            "service unavailable",
+			err:             task.ErrServiceUnavailable,
+			wantStatusCode:  http.StatusServiceUnavailable,
+			wantErrContains: []string{"service unavailable"},
+			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: task.ErrServiceUnavailable.Error()}},
+		},
+		{
+			name:            "wrapped service unavailable",
+			err:             errUnavailable,
+			wantStatusCode:  http.StatusServiceUnavailable,
+			wantErrContains: []string{"service unavailable"},
+			wantHidden:      []string{"get task"},
+			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: errUnavailable.Error()}},
+		},
+		{
+			name:            "deadline exceeded",
+			err:             context.DeadlineExceeded,
+			wantStatusCode:  http.StatusServiceUnavailable,
+			wantErrContains: []string{"service unavailable"},
+		},
+		{
+			name:            "wrapped deadline",
+			err:             fmt.Errorf("get task: %w", context.DeadlineExceeded),
+			wantStatusCode:  http.StatusServiceUnavailable,
+			wantErrContains: []string{"service unavailable"},
+			wantHidden:      []string{"get task"},
+		},
+		{
+			name:           "context canceled",
+			err:            context.Canceled,
+			wantStatusCode: http.StatusOK, // nothing is written, so the default status stays
+			wantEmptyBody:  true,
+		},
+		{
+			name:           "wrapped context canceled",
+			err:            fmt.Errorf("get task: %w", context.Canceled),
+			wantStatusCode: http.StatusOK,
+			wantEmptyBody:  true,
+		},
 	}
 
 	for _, ec := range errCases {
 		for _, ep := range storeEndpoints {
 			name := ep.name + "-" + ec.name
 			t.Run(name, func(t *testing.T) {
-				h, _ := setupTestWithStore(t, mockFailingStore{err: ec.err})
+				h, logRec := setupTestWithStore(t, mockFailingStore{err: ec.err})
 				rr, req := prepareTestRequest(t, ep.method, ep.path, ep.body)
 				h.ServeHTTP(rr, req)
 
@@ -719,13 +843,35 @@ func TestHandleStoreError(t *testing.T) {
 					t.Fatalf("status code = %v, want %v", res.StatusCode, ec.wantStatusCode)
 				}
 
-				errMes := getErrorMessageFromResponseBody(t, res.Body)
+				if ec.wantEmptyBody {
+					body, err := io.ReadAll(res.Body)
+					if err != nil {
+						t.Fatalf("read body: %v", err)
+					}
+					if len(body) != 0 {
+						t.Errorf("body = %q, want empty", body)
+					}
+				} else {
+					errMes := getErrorMessageFromResponseBody(t, res.Body)
 
-				checkErrorMesssage(t, errMes, ec.wantErrContains)
+					checkErrorMesssage(t, errMes, ec.wantErrContains)
 
-				if ec.wantHidden != nil {
-					checkErrorMessageHidden(t, errMes, ec.wantHidden)
+					if ec.wantHidden != nil {
+						checkErrorMessageHidden(t, errMes, ec.wantHidden)
+					}
 				}
+
+				// handleStoreError's own records come first, then the access log.
+				completedLevel := slog.LevelInfo
+				if ec.wantStatusCode >= http.StatusInternalServerError {
+					completedLevel = slog.LevelError
+				}
+				wantLogs := append(slices.Clone(ec.wantLogs), logtest.Want{
+					Level: completedLevel,
+					Msg:   "request completed",
+					Attrs: map[string]any{"status": int64(ec.wantStatusCode)},
+				})
+				logtest.CheckLogRecords(t, logRec.Records(), wantLogs...)
 			})
 		}
 	}

@@ -42,11 +42,17 @@ func checkConfig(t *testing.T, got, want config) {
 	if got.workerEnabled != want.workerEnabled {
 		t.Errorf("workerEnabled = %t, want %t", got.workerEnabled, want.workerEnabled)
 	}
-	if got.workerEnabled != want.workerEnabled {
-		t.Errorf("workerEnabled = %t, want %t", got.workerEnabled, want.workerEnabled)
-	}
 	if got.workerInterval != want.workerInterval {
 		t.Errorf("workerInterval = %v, want %v", got.workerInterval, want.workerInterval)
+	}
+	if got.dbURL != want.dbURL {
+		t.Errorf("dbURL = %v, want %v", got.dbURL, want.dbURL)
+	}
+	if got.dbHost != want.dbHost {
+		t.Errorf("dbHost = %v, want %v", got.dbHost, want.dbHost)
+	}
+	if got.dbName != want.dbName {
+		t.Errorf("dbName = %v, want %v", got.dbName, want.dbName)
 	}
 }
 
