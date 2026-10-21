@@ -52,34 +52,34 @@ type NewParams struct {
 	DueAt       *time.Time
 }
 
-func New(params NewParams) (*Task, error) {
+func New(params NewParams, now time.Time) (*Task, error) {
 	id := uuid.NewV7()
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	nowUTC := now.UTC().Truncate(time.Microsecond)
 	status := cmp.Or(params.Status, StatusTodo)
 
-	t := &Task{
+	task := &Task{
 		ID:        id,
-		CreatedAt: now,
+		CreatedAt: nowUTC,
 	}
 
-	err := t.Patch(Patch{
+	err := task.Patch(Patch{
 		Title:       &params.Title,
 		Description: params.Description,
 		Status:      &status,
 		DueAt:       params.DueAt,
-	})
+	}, now)
 
 	if err != nil {
 		return nil, err
 	}
 
-	// Since this is create new instance of task -> CreatedAt = UpdatedAt
-	t.UpdatedAt = now
+	// Since this is to create new instance of task -> CreatedAt = UpdatedAt
+	task.UpdatedAt = nowUTC
 
-	return t, nil
+	return task, nil
 }
 
-func (t *Task) Patch(p Patch) error {
+func (t *Task) Patch(p Patch, now time.Time) error {
 	changeUpdatedAt := false
 
 	title := p.Title
@@ -130,7 +130,7 @@ func (t *Task) Patch(p Patch) error {
 	}
 
 	if changeUpdatedAt {
-		t.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
+		t.UpdatedAt = now.UTC().Truncate(time.Microsecond)
 	}
 
 	return nil

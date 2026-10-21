@@ -115,7 +115,7 @@ func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (tas
 		return task.Task{}, task.ErrNotFound
 	}
 
-	err := t.Patch(p)
+	err := t.Patch(p, time.Now())
 
 	if err != nil {
 		return task.Task{}, err

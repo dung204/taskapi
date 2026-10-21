@@ -66,7 +66,7 @@ func parseDBURL(dbURL string) (host, dbName string, err error) {
 	}
 
 	dbName = strings.TrimPrefix(u.Path, "/")
-	if strings.Contains(dbName, "/") {
+	if dbName == "" || strings.Contains(dbName, "/") {
 		return "", "", errDatabaseURL
 	}
 
@@ -114,7 +114,7 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		errs = append(errs, fmt.Errorf(`WORKER_ENABLED must be either "true" or "false", got %q`, rawWorkerEnabled))
 	}
 
-	var workerInterval time.Duration = 0
+	workerInterval := 30 * time.Second
 	if workerEnabled {
 		rawWorkerInterval := getenv(lookup, "WORKER_INTERVAL", "30s")
 		workerInterval, err = time.ParseDuration(rawWorkerInterval)

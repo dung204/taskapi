@@ -85,7 +85,7 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := task.New(p)
+	t, err := task.New(p, time.Now())
 
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
