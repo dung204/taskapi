@@ -32,12 +32,9 @@ func timePtrEqual(a, b *time.Time) bool {
 func checkUTC(t *testing.T, field string, got time.Time) (hasError bool) {
 	t.Helper()
 
-	hasError = false
-	if got.Location() != time.UTC {
+	if hasError = got.Location() != time.UTC; hasError {
 		t.Errorf("%s location = %v, want UTC", field, got.Location())
-		hasError = true
 	}
-
 	return hasError
 }
 
@@ -74,7 +71,7 @@ func CheckTask(t *testing.T, got task.Task, want task.Task) (hasError bool) {
 		hasError = true
 	}
 
-	if hasErr := checkUTC(t, "created_at", got.UpdatedAt); hasErr {
+	if hasErr := checkUTC(t, "created_at", got.CreatedAt); hasErr {
 		hasError = true
 	}
 
