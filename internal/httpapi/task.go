@@ -1,17 +1,13 @@
 package httpapi
 
 import (
-	"cmp"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"strconv"
 	"time"
-	"uuid"
 
+	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 	"github.com/dung204/taskapi/internal/task"
 )
 
@@ -27,59 +23,17 @@ func newTaskHandler(s task.Store, l *slog.Logger) *taskHandler {
 	}
 }
 
-type createTaskRequest struct {
-	Title       string      `json:"title"`
-	Description *string     `json:"description"`
-	Status      task.Status `json:"status"`
-	DueAt       *string     `json:"due_at"`
-}
-
-func (r createTaskRequest) toNewParams() (task.NewParams, error) {
-	dueAt, err := parseTime("due_at", r.DueAt)
-	if err != nil {
-		return task.NewParams{}, err
-	}
-
-	return task.NewParams{
-		Title:       r.Title,
-		Description: r.Description,
-		Status:      r.Status,
-		DueAt:       dueAt,
-	}, nil
-}
-
-type updateTaskRequest struct {
-	Title       *string      `json:"title"`
-	Description *string      `json:"description"`
-	Status      *task.Status `json:"status"`
-	DueAt       *string      `json:"due_at"`
-}
-
-func (r updateTaskRequest) toPatch() (task.Patch, error) {
-	dueAt, err := parseTime("due_at", r.DueAt)
-	if err != nil {
-		return task.Patch{}, err
-	}
-
-	return task.Patch{
-		Title:       r.Title,
-		Description: r.Description,
-		Status:      r.Status,
-		DueAt:       dueAt,
-	}, nil
-}
-
 const dbTimeout = 3 * time.Second
 
-func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req createTaskRequest
+func (h *taskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
+	var req oapigen.CreateTaskRequest
 
 	err := readJSON(w, r, &req)
 	if err != nil {
 		return
 	}
 
-	p, err := req.toNewParams()
+	p, err := req.ToNewParams()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -101,61 +55,29 @@ func (h *taskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(w, http.StatusCreated, oapigen.ToAPITask(created))
 }
 
-func (h *taskHandler) GetList(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-
-	limit, err := strconv.Atoi(cmp.Or(query.Get("limit"), "20"))
-
-	if err != nil || limit < 1 {
-		writeError(w, http.StatusBadRequest, "limit is invalid")
-		return
-	}
-
-	if limit > 100 {
-		limit = 100
-	}
-
-	offset, err := strconv.Atoi(cmp.Or(query.Get("offset"), "0"))
-	if err != nil || offset < 0 {
-		writeError(w, http.StatusBadRequest, "offset is invalid")
-		return
-	}
-
-	status := query.Get("status")
-	if status != "" && !task.Status(status).IsValidForGet() {
-		writeError(w, http.StatusBadRequest, task.ErrInvalidGetStatus.Error())
-		return
-	}
-
-	listFilter := task.ListFilter{
-		Limit:  limit,
-		Offset: offset,
-		Status: task.Status(status),
-	}
+func (h *taskHandler) ListTasks(w http.ResponseWriter, r *http.Request, params oapigen.ListTasksParams) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	tasks, err := h.store.List(ctx, listFilter)
+	f, err := params.ToListFilter()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+
+	tasks, err := h.store.List(ctx, f)
 
 	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tasks)
+	writeJSON(w, http.StatusOK, oapigen.ToAPITasks(tasks))
 }
 
-func (h *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(r.PathValue("id"))
-
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
+func (h *taskHandler) GetTask(w http.ResponseWriter, r *http.Request, id oapigen.TaskId) {
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
@@ -165,29 +87,21 @@ func (h *taskHandler) GetOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, t)
+	writeJSON(w, http.StatusOK, oapigen.ToAPITask(t))
 }
 
-func (h *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(r.PathValue("id"))
+func (h *taskHandler) UpdateTask(w http.ResponseWriter, r *http.Request, id oapigen.TaskId) {
+	var req oapigen.UpdateTaskRequest
+	err := readJSON(w, r, &req)
 
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	var req updateTaskRequest
-	err = readJSON(w, r, &req)
-
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	p, err := req.toPatch()
+	p, err := req.ToPatch()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -199,28 +113,20 @@ func (h *taskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, t)
+	writeJSON(w, http.StatusOK, oapigen.ToAPITask(t))
 }
 
-func (h *taskHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(r.PathValue("id"))
-
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
+func (h *taskHandler) DeleteTask(w http.ResponseWriter, r *http.Request, id oapigen.TaskId) {
 	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 	defer cancel()
 
-	err = h.store.Delete(ctx, id)
+	err := h.store.Delete(ctx, id)
 
 	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	w.Write(nil)
 }
 
 func handleStoreError(ctx context.Context, w http.ResponseWriter, l *slog.Logger, err error) bool {
@@ -241,7 +147,7 @@ func handleStoreError(ctx context.Context, w http.ResponseWriter, l *slog.Logger
 
 	if errors.Is(err, task.ErrServiceUnavailable) {
 		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		l.ErrorContext(ctx, err.Error())
+		l.ErrorContext(ctx, "store error", "error", err)
 		return true
 	}
 
@@ -251,7 +157,7 @@ func handleStoreError(ctx context.Context, w http.ResponseWriter, l *slog.Logger
 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
-		l.ErrorContext(ctx, err.Error())
+		l.ErrorContext(ctx, "store error", "error", err)
 		return true
 	}
 

@@ -93,15 +93,15 @@ func loggingMiddleware(l *slog.Logger) middleware {
 func recoverMiddleware(l *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
+			defer func(ctx context.Context) {
 				if rec := recover(); rec != nil {
-					l.ErrorContext(r.Context(), "panic recovered",
+					l.ErrorContext(ctx, "panic recovered",
 						"panic", rec,
 						"stack", string(debug.Stack()),
 					)
 					writeError(w, http.StatusInternalServerError, "internal server error")
 				}
-			}()
+			}(r.Context())
 			next.ServeHTTP(w, r)
 		})
 	}

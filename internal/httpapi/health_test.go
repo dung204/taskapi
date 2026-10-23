@@ -17,7 +17,7 @@ var unavailableStr = "unavailable"
 
 type mockPinger struct{ err error }
 
-func (p mockPinger) PingContext(context.Context) error { return p.err }
+func (p mockPinger) Ping(context.Context) error { return p.err }
 
 func checkHealthResponse(t *testing.T, got healthResponse, want healthResponse) {
 	t.Helper()

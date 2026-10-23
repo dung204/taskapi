@@ -7,7 +7,7 @@ import (
 )
 
 type storePinger interface {
-	PingContext(ctx context.Context) error
+	Ping(ctx context.Context) error
 }
 
 type healthHandler struct {
@@ -25,8 +25,7 @@ func (handler *healthHandler) CheckHealth(w http.ResponseWriter, r *http.Request
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
-		err := handler.pinger.PingContext(ctx)
-		if err != nil {
+		if err := handler.pinger.Ping(ctx); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "store": "unavailable"})
 			return
 		}

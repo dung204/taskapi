@@ -1,47 +1,32 @@
+// Package postgres implements [task.Store] on top of Postgres.
 package postgres
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 	"uuid"
 
-	"github.com/dung204/taskapi/internal/task"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
+	"github.com/dung204/taskapi/internal/task"
 )
 
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanToTask(s scanner, t *task.Task) error {
-	if err := s.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.DueAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
-		return err
-	}
-
-	t.CreatedAt = t.CreatedAt.UTC()
-	t.UpdatedAt = t.UpdatedAt.UTC()
-	if t.DueAt != nil {
-		t.DueAt = new(t.DueAt.UTC())
-	}
-	return nil
-}
-
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 type TaskStore struct {
-	db *sql.DB
+	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ task.Store = (*TaskStore)(nil)
 
-func NewTaskStore(db *sql.DB) *TaskStore {
+func NewTaskStore(pool *pgxpool.Pool) *TaskStore {
 	return &TaskStore{
-		db: db,
+		pool: pool,
+		q:    sqlcgen.New(pool),
 	}
 }
 
@@ -51,20 +36,10 @@ func (s *TaskStore) Create(ctx context.Context, t task.Task) (task.Task, error) 
 		return formatPostgresError("create", t.ID.String(), err)
 	}
 
-	_, err := s.db.ExecContext(
-		ctx,
-		`INSERT INTO "tasks" 
-			("id", "title", "description", "status", 
-			"due_at", "created_at", "updated_at")
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		t.ID,
-		t.Title,
-		t.Description,
-		t.Status,
-		t.DueAt,
-		t.CreatedAt,
-		t.UpdatedAt,
-	)
+	err := s.q.CreateTask(ctx, sqlcgen.CreateTaskParams{
+		ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
+		DueAt: t.DueAt, CreatedAt: t.CreatedAt, UpdatedAt: t.CreatedAt,
+	})
 
 	if err != nil {
 		return task.Task{}, formatError(err)
@@ -79,16 +54,7 @@ func (s *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 		return formatPostgresError("delete", id.String(), err)
 	}
 
-	res, err := s.db.ExecContext(
-		ctx,
-		`DELETE FROM "tasks" WHERE "id" = $1`,
-		id,
-	)
-	if err != nil {
-		return formatError(err)
-	}
-
-	affected, err := res.RowsAffected()
+	affected, err := s.q.DeleteTask(ctx, id)
 	if err != nil {
 		return formatError(err)
 	}
@@ -106,32 +72,8 @@ func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
 		return formatPostgresError("get", id.String(), err)
 	}
 
-	return s.get(ctx, s.db, id, formatError)
-}
-
-type formatErrorFunc = func(err error) error
-
-const selectTaskByID = `
-SELECT 
-	"id", "title", "description", "status", 
-	"due_at", "created_at", "updated_at"
-FROM "tasks" 
-WHERE "id" = $1
-`
-
-func (s *TaskStore) get(ctx context.Context, q rowQuerier, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
-	return queryTask(ctx, q, selectTaskByID, id, formatError)
-}
-
-func (s *TaskStore) getForUpdate(ctx context.Context, tx *sql.Tx, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
-	return queryTask(ctx, tx, selectTaskByID+" FOR UPDATE", id, formatError)
-}
-
-func queryTask(ctx context.Context, q rowQuerier, query string, id uuid.UUID, formatError formatErrorFunc) (task.Task, error) {
-	var t task.Task
-	err := scanToTask(q.QueryRowContext(ctx, query, id), &t)
-
-	if errors.Is(err, sql.ErrNoRows) {
+	row, err := s.q.GetTask(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return task.Task{}, task.ErrNotFound
 	}
 
@@ -139,7 +81,7 @@ func queryTask(ctx context.Context, q rowQuerier, query string, id uuid.UUID, fo
 		return task.Task{}, formatError(err)
 	}
 
-	return t, nil
+	return taskFromRow(row), nil
 }
 
 // List implements [task.Store].
@@ -148,39 +90,26 @@ func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, e
 		return formatPostgresError("list", "", err)
 	}
 
-	rows, err := s.db.QueryContext(
-		ctx,
-		`SELECT 
-			"id", "title", "description", "status", 
-			"due_at", "created_at", "updated_at"
-		FROM "tasks" 
-		WHERE ($1 = '' OR "status" = $1)
-		ORDER BY "id" DESC	
-		LIMIT $2 OFFSET $3
-		`,
-		f.Status,
-		f.Limit,
-		f.Offset,
-	)
+	var rows []sqlcgen.Task
+	var err error
+
+	if f.Status == "" {
+		rows, err = s.q.ListTasks(ctx, sqlcgen.ListTasksParams{
+			Limit: int32(f.Limit), Offset: int32(f.Offset),
+		})
+	} else {
+		rows, err = s.q.ListTasksByStatus(ctx, sqlcgen.ListTasksByStatusParams{
+			Status: f.Status, Limit: int32(f.Limit), Offset: int32(f.Offset),
+		})
+	}
 	if err != nil {
 		return nil, formatError(err)
 	}
-	defer rows.Close()
 
-	tasks := make([]task.Task, 0)
-	for rows.Next() {
-		t := task.Task{}
-		if err := scanToTask(rows, &t); err != nil {
-			return nil, formatError(err)
-		}
-
-		tasks = append(tasks, t)
+	tasks := make([]task.Task, len(rows))
+	for i, r := range rows {
+		tasks[i] = taskFromRow(r)
 	}
-
-	if err = rows.Err(); err != nil {
-		return nil, formatError(err)
-	}
-
 	return tasks, nil
 }
 
@@ -190,45 +119,32 @@ func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (tas
 		return formatPostgresError("update", id.String(), err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return task.Task{}, formatError(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	t, err := s.getForUpdate(ctx, tx, id, formatError)
-	if err != nil {
-		return t, err
+	q := s.q.WithTx(tx)
+
+	row, err := q.GetTaskForUpdate(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return task.Task{}, task.ErrNotFound
 	}
 
-	err = t.Patch(p, time.Now())
 	if err != nil {
+		return task.Task{}, formatError(err)
+	}
+
+	t := taskFromRow(row)
+	if err = t.Patch(p, time.Now()); err != nil {
 		return task.Task{}, err
 	}
 
-	res, err := tx.ExecContext(
-		ctx,
-		`UPDATE "tasks"
-		SET
-			"title" = $1,
-			"description" = $2,
-			"status" = $3,
-			"due_at" = $4,
-			"updated_at" = $5
-		WHERE "id" = $6
-		`,
-		t.Title,
-		t.Description,
-		t.Status,
-		t.DueAt,
-		t.UpdatedAt,
-		t.ID,
-	)
-	if err != nil {
-		return task.Task{}, formatError(err)
-	}
-
-	affected, err := res.RowsAffected()
+	affected, err := q.UpdateTask(ctx, sqlcgen.UpdateTaskParams{
+		Title: t.Title, Description: t.Description, Status: t.Status,
+		DueAt: t.DueAt, UpdatedAt: t.UpdatedAt, ID: t.ID,
+	})
 	if err != nil {
 		return task.Task{}, formatError(err)
 	}
@@ -237,8 +153,7 @@ func (s *TaskStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (tas
 		return task.Task{}, task.ErrNotFound
 	}
 
-	err = tx.Commit()
-	if err != nil {
+	if err = tx.Commit(ctx); err != nil {
 		return task.Task{}, formatError(err)
 	}
 
@@ -251,19 +166,7 @@ func (s *TaskStore) MarkOverdue(ctx context.Context, now time.Time) (int64, erro
 		return formatPostgresError("mark overdue", "", err)
 	}
 
-	res, err := s.db.ExecContext(
-		ctx,
-		`UPDATE "tasks"
-		SET "status" = 'overdue', "updated_at" = $1
-		WHERE "status" NOT IN ('overdue', 'done') AND  "due_at" < $1
-		`,
-		now,
-	)
-	if err != nil {
-		return 0, formatError(err)
-	}
-
-	affected, err := res.RowsAffected()
+	affected, err := s.q.MarkOverdue(ctx, now)
 	if err != nil {
 		return 0, formatError(err)
 	}
@@ -289,4 +192,15 @@ func formatPostgresError(op string, taskID string, err error) error {
 	}
 
 	return fmt.Errorf("postgres: %s task%s: %w", op, id, err)
+}
+
+func taskFromRow(r sqlcgen.Task) task.Task {
+	t := task.Task(r)
+	t.CreatedAt = t.CreatedAt.UTC()
+	t.UpdatedAt = t.UpdatedAt.UTC()
+	if t.DueAt != nil {
+		t.DueAt = new(t.DueAt.UTC())
+	}
+
+	return t
 }

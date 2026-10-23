@@ -41,8 +41,8 @@ func setupTest(t *testing.T) (h http.Handler, store task.Store, rec *logtest.Rec
 	return h, store, rec
 }
 
-func prepareTestRequest(t *testing.T, method, target string, body any) (*httptest.ResponseRecorder, *http.Request) {
-	t.Helper()
+func prepareTestRequest(tb testing.TB, method, target string, body any) (*httptest.ResponseRecorder, *http.Request) {
+	tb.Helper()
 
 	var r io.Reader
 	switch v := body.(type) {
@@ -54,21 +54,21 @@ func prepareTestRequest(t *testing.T, method, target string, body any) (*httptes
 	default:
 		b, err := json.Marshal(v)
 		if err != nil {
-			t.Fatalf("marshal body: %v", err)
+			tb.Fatalf("marshal body: %v", err)
 		}
 
 		r = bytes.NewReader(b)
 	}
 
-	req := httptest.NewRequest(method, target, r)
+	req := httptest.NewRequestWithContext(tb.Context(), method, target, r)
 	req.Header.Set("Content-Type", "application/json")
 
 	rec := httptest.NewRecorder()
 	return rec, req
 }
 
-func decodeResponseBody[T any](t testing.TB, body io.ReadCloser) T {
-	t.Helper()
+func decodeResponseBody[T any](tb testing.TB, body io.ReadCloser) T {
+	tb.Helper()
 
 	var dst T
 	err := json.NewDecoder(body).Decode(&dst)
@@ -78,18 +78,18 @@ func decodeResponseBody[T any](t testing.TB, body io.ReadCloser) T {
 	if err != nil {
 		switch {
 		case errors.Is(err, io.EOF):
-			t.Fatalf("response body is required")
+			tb.Fatalf("response body is required")
 		case errors.Is(err, io.ErrUnexpectedEOF):
-			t.Fatalf("response body contains malformed JSON")
+			tb.Fatalf("response body contains malformed JSON")
 		case errors.As(err, &syntaxErr):
-			t.Fatalf("request body contains malformed JSON (at position %d)", syntaxErr.Offset)
+			tb.Fatalf("request body contains malformed JSON (at position %d)", syntaxErr.Offset)
 		case errors.As(err, &typeErr):
 			if typeErr.Field == "" {
-				t.Fatalf("response body must be a JSON object")
+				tb.Fatalf("response body must be a JSON object")
 			}
-			t.Fatalf("field %q has the wrong type", typeErr.Field)
+			tb.Fatalf("field %q has the wrong type", typeErr.Field)
 		default:
-			t.Fatal("invalid response body")
+			tb.Fatal("invalid response body")
 		}
 	}
 
@@ -100,9 +100,9 @@ type errorResponse struct {
 	Message string `json:"error"`
 }
 
-func getErrorMessageFromResponseBody(t testing.TB, body io.ReadCloser) string {
-	t.Helper()
-	return decodeResponseBody[errorResponse](t, body).Message
+func getErrorMessageFromResponseBody(tb testing.TB, body io.ReadCloser) string {
+	tb.Helper()
+	return decodeResponseBody[errorResponse](tb, body).Message
 }
 
 func checkErrorMesssage(t *testing.T, msg string, wantErrContains []string) {
@@ -119,19 +119,19 @@ func checkErrorMesssage(t *testing.T, msg string, wantErrContains []string) {
 	}
 }
 
-func checkErrorMessageHidden(t testing.TB, msg string, secrets []string) {
-	t.Helper()
+func checkErrorMessageHidden(tb testing.TB, msg string, secrets []string) {
+	tb.Helper()
 	if len(secrets) == 0 {
-		t.Fatalf("case %q: error case must set wantErrContains", t.Name())
+		tb.Fatalf("case %q: error case must set wantErrContains", tb.Name())
 	}
 
 	lower := strings.ToLower(msg)
 	for _, s := range secrets {
 		if s == "" {
-			t.Fatalf("checkErrorMessageHidden: empty secret would match any body")
+			tb.Fatalf("checkErrorMessageHidden: empty secret would match any body")
 		}
 		if strings.Contains(lower, strings.ToLower(s)) {
-			t.Errorf("response body leaks %q: %s", s, msg)
+			tb.Errorf("response body leaks %q: %s", s, msg)
 		}
 	}
 }

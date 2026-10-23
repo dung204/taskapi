@@ -1,3 +1,5 @@
+// Package tasktest holds test helpers shared by the store implementations,
+// including the behaviour suite that every [task.Store] must pass.
 package tasktest
 
 import (

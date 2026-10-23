@@ -9,6 +9,7 @@ import (
 
 func TestTaskStore(t *testing.T) {
 	tasktest.TestStore(t, func(t *testing.T) task.Store {
+		t.Helper()
 		return NewTaskStore()
 	})
 }

@@ -1,3 +1,5 @@
+// Package logtest provides an in-memory [slog.Handler] for asserting on log
+// records in tests.
 package logtest
 
 import (
@@ -102,22 +104,22 @@ type Want struct {
 	Attrs map[string]any
 }
 
-func CheckLogRecord(t testing.TB, got slog.Record, want Want) {
-	t.Helper()
+func CheckLogRecord(tb testing.TB, got slog.Record, want Want) {
+	tb.Helper()
 
 	if got.Level != want.Level {
-		t.Errorf("level = %v, want %v", got.Level, want.Level)
+		tb.Errorf("level = %v, want %v", got.Level, want.Level)
 	}
 
 	if got.Message != want.Msg {
-		t.Errorf("message = %q, want %q", got.Message, want.Msg)
+		tb.Errorf("message = %q, want %q", got.Message, want.Msg)
 	}
 
 	attrs := Attrs(got)
 	for k, want := range want.Attrs {
 		v, ok := attrs[k]
 		if !ok {
-			t.Errorf("missing attribute %q", k)
+			tb.Errorf("missing attribute %q", k)
 			continue
 		}
 
@@ -125,24 +127,24 @@ func CheckLogRecord(t testing.TB, got slog.Record, want Want) {
 		case error:
 			got, _ := v.Any().(error)
 			if !errors.Is(got, w) {
-				t.Errorf("attribute %q = error %q, want error matching %q", k, got, w)
+				tb.Errorf("attribute %q = error %q, want error matching %q", k, got, w)
 			}
 		default:
 			if val := v.Any(); val != want {
-				t.Errorf("attribute %q = %T(%v), want %T(%v)", k, val, val, want, want)
+				tb.Errorf("attribute %q = %T(%v), want %T(%v)", k, val, val, want, want)
 			}
 		}
 	}
 }
 
-func CheckLogRecords(t testing.TB, got []slog.Record, want ...Want) {
-	t.Helper()
+func CheckLogRecords(tb testing.TB, got []slog.Record, want ...Want) {
+	tb.Helper()
 
 	if len(got) != len(want) {
-		t.Fatalf("log records count = %d, want %d", len(got), len(want))
+		tb.Fatalf("log records count = %d, want %d", len(got), len(want))
 	}
 
-	for i := range len(got) {
-		CheckLogRecord(t, got[i], want[i])
+	for i := range got {
+		CheckLogRecord(tb, got[i], want[i])
 	}
 }

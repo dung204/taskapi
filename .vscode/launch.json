@@ -12,5 +12,5 @@
       "program": "${workspaceFolder}/cmd/server",
       "envFile": "${workspaceFolder}/.env"
     }
-  ]
+  ],
 }

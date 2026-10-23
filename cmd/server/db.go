@@ -2,29 +2,31 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func connectDB(dbURL string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dbURL)
+func connectDB(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	cfg.MaxConns = 10
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(10)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	err = db.PingContext(ctx)
-	if err != nil {
-		db.Close()
+	if err = pool.Ping(pingCtx); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	return db, nil
+	return pool, nil
 }

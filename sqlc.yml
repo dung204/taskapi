@@ -1,0 +1,53 @@
+# sqlc configuration (version 2 format).
+# Generate with:  go tool sqlc generate
+version: "2"
+
+sql:
+  - engine: "postgresql"
+
+    # The schema comes straight from the goose migrations. sqlc understands the
+    # "-- +goose Up / Down" annotations and only reads the Up part.
+    schema: "migrations"
+    queries: "internal/store/postgres/queries"
+
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/store/postgres/sqlcgen"
+
+        # Native pgx v5 instead of database/sql.
+        sql_package: "pgx/v5"
+
+        # :many queries return [] instead of nil, matching the Store contract
+        # ("List returns a non-nil empty slice").
+        emit_empty_slices: true
+
+        # Do not generate model structs for tables nobody queries.
+        omit_unused_structs: true
+
+        # No json tags: JSON shapes belong to the API layer (OpenAPI), not here.
+        emit_json_tags: false
+
+        overrides:
+          # timestamptz -> time.Time. Nullable columns (due_at) -> *time.Time.
+          # pgx returns times in time.Local, so convert with .UTC() in the store.
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              type: "time.Time"
+              pointer: true
+
+          # UUID -> the standard library uuid package.
+          # Check early that pgx can scan into this type (see the notes).
+          - db_type: "uuid"
+            go_type:
+              import: "uuid"
+              type: "UUID"
+
+          # tasks.status -> the domain type, not a bare string.
+          - column: "tasks.status"
+            go_type:
+              import: "github.com/dung204/taskapi/internal/task"
+              type: "Status"

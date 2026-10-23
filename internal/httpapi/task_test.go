@@ -12,6 +12,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 	"github.com/dung204/taskapi/internal/logtest"
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
@@ -39,7 +40,28 @@ func taskWith(mod func(*task.Task)) task.Task {
 	return t
 }
 
-func TestCreate(t *testing.T) {
+func apiTaskWith(mod func(*task.Task)) oapigen.Task {
+	return oapigen.ToAPITask(taskWith(mod))
+}
+
+// checkAPITask adapts oapigen.Task to the task.Task that tasktest.CheckTask expects.
+func checkAPITask(t *testing.T, got, want oapigen.Task) {
+	t.Helper()
+	toTask := func(a oapigen.Task) task.Task {
+		return task.Task{
+			ID:          a.Id,
+			Title:       a.Title,
+			Description: a.Description,
+			Status:      a.Status,
+			DueAt:       a.DueAt,
+			CreatedAt:   a.CreatedAt,
+			UpdatedAt:   a.UpdatedAt,
+		}
+	}
+	tasktest.CheckTask(t, toTask(got), toTask(want))
+}
+
+func TestCreateTask(t *testing.T) {
 	dueAt := time.Date(2026, 10, 14, 9, 53, 50, 0, time.UTC).Truncate(time.Microsecond)
 	dueAtStr := dueAt.Format(time.RFC3339)
 
@@ -47,7 +69,7 @@ func TestCreate(t *testing.T) {
 		name            string
 		body            map[string]any
 		wantStatusCode  int
-		wantTask        *task.Task
+		wantTask        *oapigen.Task
 		wantErrContains []string
 	}{
 		{
@@ -59,7 +81,7 @@ func TestCreate(t *testing.T) {
 				"due_at":      dueAtStr,
 			},
 			wantStatusCode: http.StatusCreated,
-			wantTask: &task.Task{
+			wantTask: &oapigen.Task{
 				Title:       "Task title",
 				Description: "Task description",
 				Status:      "todo",
@@ -101,12 +123,12 @@ func TestCreate(t *testing.T) {
 			}
 
 			if tt.wantTask != nil {
-				got := decodeResponseBody[task.Task](t, res.Body)
+				got := decodeResponseBody[oapigen.Task](t, res.Body)
 
-				tt.wantTask.ID = got.ID
+				tt.wantTask.Id = got.Id
 				tt.wantTask.CreatedAt = got.CreatedAt
 				tt.wantTask.UpdatedAt = got.UpdatedAt
-				tasktest.CheckTask(t, got, *tt.wantTask)
+				checkAPITask(t, got, *tt.wantTask)
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -154,7 +176,7 @@ func checkListFilter(t *testing.T, got task.ListFilter, want task.ListFilter) {
 	}
 }
 
-func TestGetList_Filter(t *testing.T) {
+func TestListTasks_Filter(t *testing.T) {
 	tests := []struct {
 		name            string
 		params          string
@@ -288,7 +310,7 @@ func seedTasks(t *testing.T, s task.Store, n int) {
 	}
 }
 
-func TestGetList_Paging(t *testing.T) {
+func TestListTasks_Paging(t *testing.T) {
 	tests := []struct {
 		name    string
 		seed    int
@@ -322,7 +344,7 @@ func TestGetList_Paging(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", res.StatusCode, http.StatusOK)
 			}
 
-			gotTasks := decodeResponseBody[[]task.Task](t, res.Body)
+			gotTasks := decodeResponseBody[[]oapigen.Task](t, res.Body)
 
 			// An empty page must be encoded as [] rather than null:
 			// [] decodes to an empty non-nil slice, while null decodes to nil.
@@ -332,7 +354,7 @@ func TestGetList_Paging(t *testing.T) {
 
 			gotIDs := make([]uuid.UUID, 0)
 			for _, tsk := range gotTasks {
-				gotIDs = append(gotIDs, tsk.ID)
+				gotIDs = append(gotIDs, tsk.Id)
 			}
 
 			if !slices.Equal(gotIDs, tt.wantIDs) {
@@ -355,19 +377,19 @@ func (s mockGetOneStore) Get(_ context.Context, id uuid.UUID) (task.Task, error)
 	return task.Task{}, task.ErrNotFound
 }
 
-func TestGetOne(t *testing.T) {
+func TestGetTask(t *testing.T) {
 	tests := []struct {
 		name            string
 		id              string
 		wantStatusCode  int
-		wantTask        *task.Task
+		wantTask        *oapigen.Task
 		wantErrContains []string
 	}{
 		{
 			name:            "invalid UUID",
 			id:              "abc",
 			wantStatusCode:  http.StatusBadRequest,
-			wantErrContains: []string{"uuid", "invalid"},
+			wantErrContains: []string{"invalid"},
 		},
 		{
 			name:            "valid UUID but not found",
@@ -379,7 +401,7 @@ func TestGetOne(t *testing.T) {
 			name:           "valid UUID and found",
 			id:             validID.String(),
 			wantStatusCode: http.StatusOK,
-			wantTask:       new(defaultTask()),
+			wantTask:       new(oapigen.ToAPITask(defaultTask())),
 		},
 	}
 
@@ -397,7 +419,7 @@ func TestGetOne(t *testing.T) {
 			}
 
 			if tt.wantTask != nil {
-				tasktest.CheckTask(t, decodeResponseBody[task.Task](t, res.Body), *tt.wantTask)
+				checkAPITask(t, decodeResponseBody[oapigen.Task](t, res.Body), *tt.wantTask)
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -422,7 +444,7 @@ func (s *mockCaptureUpdateStore) Update(ctx context.Context, id uuid.UUID, p tas
 	return s.Store.Update(ctx, id, p)
 }
 
-func TestUpdate(t *testing.T) {
+func TestUpdateTask(t *testing.T) {
 	tests := []struct {
 		name            string
 		id              string
@@ -431,7 +453,7 @@ func TestUpdate(t *testing.T) {
 		wantCalled      bool
 		wantID          uuid.UUID
 		wantPatch       task.Patch
-		wantTask        *task.Task
+		wantTask        *oapigen.Task
 		wantErrContains []string
 	}{
 		{
@@ -440,7 +462,7 @@ func TestUpdate(t *testing.T) {
 			body:            "{}",
 			wantStatusCode:  http.StatusBadRequest,
 			wantCalled:      false,
-			wantErrContains: []string{"uuid", "invalid"},
+			wantErrContains: []string{"invalid"},
 		},
 		{
 			name:            "empty body",
@@ -489,7 +511,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{Title: new("new")},
-			wantTask:       new(taskWith(func(t *task.Task) { t.Title = "new" })),
+			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Title = "new" })),
 		},
 		{
 			name:           "set description to blank",
@@ -499,7 +521,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{Description: new("")},
-			wantTask:       new(taskWith(func(t *task.Task) { t.Description = "" })),
+			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Description = "" })),
 		},
 		{
 			name:           "valid due_at in UTC",
@@ -509,7 +531,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{DueAt: new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))},
-			wantTask: new(taskWith(func(t *task.Task) {
+			wantTask: new(apiTaskWith(func(t *task.Task) {
 				t.DueAt = new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))
 			})),
 		},
@@ -522,7 +544,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{DueAt: new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))},
-			wantTask: new(taskWith(func(t *task.Task) {
+			wantTask: new(apiTaskWith(func(t *task.Task) {
 				t.DueAt = new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))
 			})),
 		},
@@ -534,7 +556,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{Status: new(task.StatusTodo)},
-			wantTask:       new(taskWith(func(t *task.Task) { t.Status = task.StatusTodo })),
+			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusTodo })),
 		},
 		{
 			name:           "valid status doing",
@@ -544,7 +566,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{Status: new(task.StatusDoing)},
-			wantTask:       new(taskWith(func(t *task.Task) { t.Status = task.StatusDoing })),
+			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusDoing })),
 		},
 		{
 			name:           "valid status done",
@@ -554,7 +576,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{Status: new(task.StatusDone)},
-			wantTask:       new(taskWith(func(t *task.Task) { t.Status = task.StatusDone })),
+			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusDone })),
 		},
 		{
 			name:           "empty object leaves unchanged",
@@ -564,7 +586,7 @@ func TestUpdate(t *testing.T) {
 			wantCalled:     true,
 			wantID:         validID,
 			wantPatch:      task.Patch{},
-			wantTask:       new(defaultTask()),
+			wantTask:       new(oapigen.ToAPITask(defaultTask())),
 		},
 		{
 			name:            "valid id but not found",
@@ -628,11 +650,11 @@ func TestUpdate(t *testing.T) {
 			}
 
 			if tt.wantTask != nil {
-				gotTask := decodeResponseBody[task.Task](t, res.Body)
+				gotTask := decodeResponseBody[oapigen.Task](t, res.Body)
 				// We don't focus on the UpdatedAt field here
 				// since it's in a separate suite for Patch() method of Task
 				gotTask.UpdatedAt = tt.wantTask.UpdatedAt
-				tasktest.CheckTask(t, gotTask, *tt.wantTask)
+				checkAPITask(t, gotTask, *tt.wantTask)
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -655,7 +677,7 @@ func (s *mockCaptureDeleteStore) Delete(ctx context.Context, id uuid.UUID) error
 	return s.Store.Delete(ctx, id)
 }
 
-func TestDelete(t *testing.T) {
+func TestDeleteTask(t *testing.T) {
 	tests := []struct {
 		name            string
 		id              string
@@ -669,7 +691,7 @@ func TestDelete(t *testing.T) {
 			id:              "abc",
 			wantStatusCode:  http.StatusBadRequest,
 			wantCalled:      false,
-			wantErrContains: []string{"uuid", "invalid"},
+			wantErrContains: []string{"invalid"},
 		},
 		{
 			name:            "valid ID but not found",
@@ -768,6 +790,7 @@ func TestHandleStoreError(t *testing.T) {
 	}
 
 	errUnavailable := fmt.Errorf("get task: %w", task.ErrServiceUnavailable)
+	errGeneric := errors.New("oops")
 
 	errCases := []struct {
 		name            string
@@ -780,18 +803,18 @@ func TestHandleStoreError(t *testing.T) {
 	}{
 		{
 			name:            "generic error",
-			err:             errors.New("oops"),
+			err:             errGeneric,
 			wantStatusCode:  http.StatusInternalServerError,
 			wantErrContains: []string{"internal"},
 			wantHidden:      []string{"oops"},
-			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "oops"}},
+			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errGeneric}}},
 		},
 		{
 			name:            "service unavailable",
 			err:             task.ErrServiceUnavailable,
 			wantStatusCode:  http.StatusServiceUnavailable,
 			wantErrContains: []string{"service unavailable"},
-			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: task.ErrServiceUnavailable.Error()}},
+			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": task.ErrServiceUnavailable}}},
 		},
 		{
 			name:            "wrapped service unavailable",
@@ -799,7 +822,7 @@ func TestHandleStoreError(t *testing.T) {
 			wantStatusCode:  http.StatusServiceUnavailable,
 			wantErrContains: []string{"service unavailable"},
 			wantHidden:      []string{"get task"},
-			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: errUnavailable.Error()}},
+			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errUnavailable}}},
 		},
 		{
 			name:            "deadline exceeded",

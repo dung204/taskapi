@@ -1,20 +1,44 @@
 package postgres
 
 import (
-	"database/sql"
+	"context"
 	"os"
+	"sync"
+
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/task/tasktest"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func truncateTasks(t *testing.T, db *sql.DB) {
+var migrateOnce sync.Once
+
+func migrateTestDB(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	migrateOnce.Do(func() {
+		db := stdlib.OpenDBFromPool(pool)
+		provider, err := goose.NewProvider(
+			goose.DialectPostgres, db, os.DirFS("../../../migrations"),
+		)
+		if err != nil {
+			t.Fatalf("goose provider: %v", err)
+		}
+
+		if _, err := provider.Up(context.Background()); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+	})
+}
+
+func truncateTasks(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 
-	_, err := db.ExecContext(
+	_, err := pool.Exec(
 		t.Context(),
 		`TRUNCATE tasks`,
 	)
@@ -25,14 +49,15 @@ func truncateTasks(t *testing.T, db *sql.DB) {
 
 func newPGStore(t *testing.T, url string) task.Store {
 	t.Helper()
-	db, err := sql.Open("pgx", url)
+	pool, err := pgxpool.New(t.Context(), url)
 	if err != nil {
 		t.Fatalf("connect to db: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { pool.Close() })
 
-	truncateTasks(t, db)
-	return NewTaskStore(db)
+	migrateTestDB(t, pool)
+	truncateTasks(t, pool)
+	return NewTaskStore(pool)
 }
 
 func TestTaskStore(t *testing.T) {
@@ -41,6 +66,7 @@ func TestTaskStore(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
 	tasktest.TestStore(t, func(t *testing.T) task.Store {
+		t.Helper()
 		return newPGStore(t, url)
 	})
 }

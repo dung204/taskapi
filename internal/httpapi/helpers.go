@@ -7,29 +7,25 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"time"
-
-	"github.com/dung204/taskapi/internal/task"
 )
 
-func writeJSON(w http.ResponseWriter, status int, v any) error {
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	b, err := json.Marshal(v)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("{\"error\":\"internal server error\"}"))
+		// error handling is useless here
+		_, _ = w.Write([]byte("{\"error\":\"internal server error\"}"))
 		fmt.Fprintln(os.Stderr, err) // TODO: replace with logger
-		return err
 	}
 
 	w.WriteHeader(status)
-	w.Write(b)
-	return nil
+	_, _ = w.Write(b)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) error {
-	return writeJSON(w, status, map[string]string{"error": msg})
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
@@ -60,17 +56,4 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	}
 
 	return nil
-}
-
-func parseTime(field string, s *string) (*time.Time, error) {
-	if s == nil {
-		return nil, nil
-	}
-
-	t, err := time.Parse(time.RFC3339, *s)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s must be an RFC3339 date-time, for example 2030-01-01T00:00:00Z", task.ErrInvalidInput, field)
-	}
-
-	return &t, nil
 }

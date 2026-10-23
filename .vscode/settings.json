@@ -1,0 +1,34 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "EditorConfig.EditorConfig",
+  "[go]": {
+    "editor.insertSpaces": false,
+    "togglequotes.chars": [
+      "\"",
+      "'",
+      "`"
+    ],
+    "editor.formatOnSave": true,
+    "editor.formatOnSaveMode": "file",
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    },
+    "editor.defaultFormatter": "golang.go"
+  },
+  "go.lintTool": "golangci-lint-v2",
+  "go.lintOnSave": "package",
+  "go.lintFlags": ["--path-mode=abs"],
+  "go.formatTool": "custom",
+  "go.formatFlags": ["fmt", "--stdin"],
+  "go.alternateTools": {
+    "golangci-lint-v2": "${workspaceFolder}/bin/golangci-lint",
+    "customFormatter": "${workspaceFolder}/bin/golangci-lint"
+  },
+  "gopls": {
+    "ui.diagnostic.staticcheck": true
+  },
+  "files.readonlyInclude": {
+    "**/sqlcgen/*": true,
+    "**/*.gen.go": true
+  }
+}

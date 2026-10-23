@@ -1,3 +1,4 @@
+// Package worker runs the background scan that marks overdue tasks.
 package worker
 
 import (

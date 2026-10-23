@@ -1,3 +1,5 @@
+// Package task is the domain layer: the [Task] type, its validation, the
+// [Store] interface and the sentinel errors.
 package task
 
 import (
@@ -36,13 +38,13 @@ func (s Status) IsValidForGet() bool {
 }
 
 type Task struct {
-	ID          uuid.UUID  `json:"id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Status      Status     `json:"status"`
-	DueAt       *time.Time `json:"due_at"` // nullable
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          uuid.UUID
+	Title       string
+	Description string
+	Status      Status
+	DueAt       *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type NewParams struct {

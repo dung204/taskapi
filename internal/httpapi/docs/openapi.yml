@@ -1,0 +1,367 @@
+openapi: 3.1.0
+
+info:
+  title: Task Tracker API
+  version: 1.0.0
+  description: |
+    A small REST API for managing tasks.
+
+    Every error response has the same shape: `{"error": "<message>"}`.
+    Internal details of 500 errors are never exposed, they are only logged.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: health
+    description: Liveness and dependency checks
+  - name: tasks
+    description: Task CRUD
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: checkHealth
+      summary: Check the server and its store
+      description: With a database-backed store, the database is pinged as well.
+      responses:
+        "200":
+          description: Server and store are healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: ok
+                store: ok
+        "503":
+          description: The store cannot be reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: unavailable
+                store: unavailable
+
+  /tasks:
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: List tasks
+      description: Newest first (ordered by `id` descending, IDs are UUIDv7).
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/StatusFilter"
+      responses:
+        "200":
+          description: A page of tasks. An empty page is `[]`, never `null`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    post:
+      tags: [tasks]
+      operationId: createTask
+      summary: Create a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: The created task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+
+    get:
+      tags: [tasks]
+      operationId: getTask
+      summary: Get one task
+      responses:
+        "200":
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    patch:
+      tags: [tasks]
+      operationId: updateTask
+      summary: Update a task partially
+      description: |
+        Only the fields present in the body are changed. `updated_at` moves only
+        when a field actually changes. The update is atomic: if any field is
+        invalid, nothing is changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: The task after the update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    delete:
+      tags: [tasks]
+      operationId: deleteTask
+      summary: Delete a task
+      responses:
+        "204":
+          description: Deleted, no body
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      description: Task ID (UUID)
+      schema:
+        $ref: "#/components/schemas/TaskId"
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Page size. Defaults to 20. A value above 100 is not an error, it is
+        clamped to 100. A value below 1 or a non-integer is rejected with 400.
+      schema:
+        type: integer
+        minimum: 1
+        default: 20
+
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Number of tasks to skip. Defaults to 0.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    StatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Only return tasks with this status.
+      schema:
+        $ref: "#/components/schemas/Status"
+
+  schemas:
+    TaskId:
+      type: string
+      format: uuid
+      description: UUIDv7, generated by the server.
+      x-go-type: uuid.UUID
+      x-go-type-import:
+        path: uuid
+
+    Status:
+      type: string
+      enum: [todo, doing, done, overdue]
+      description: |
+        `overdue` is set only by the server (a background worker, for tasks past
+        their `due_at` that are not `done`). Clients can filter by it but cannot
+        set it.
+      x-go-type: task.Status
+      x-go-type-import:
+        path: github.com/dung204/taskapi/internal/task
+
+    WritableStatus:
+      type: string
+      enum: [todo, doing, done]
+      description: The statuses a client is allowed to set.
+      x-go-type: task.Status
+      x-go-type-import:
+        path: github.com/dung204/taskapi/internal/task
+
+    Task:
+      type: object
+      required: [id, title, description, status, due_at, created_at, updated_at]
+      properties:
+        id:
+          $ref: "#/components/schemas/TaskId"
+        title:
+          type: string
+          description: 1 to 200 characters after trimming surrounding whitespace.
+        description:
+          type: string
+          maxLength: 2000
+        status:
+          $ref: "#/components/schemas/Status"
+        due_at:
+          type: [string, "null"]
+          format: date-time
+          description: RFC 3339. `null` when the task has no due date.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          description: |
+            Required. 1 to 200 characters after trimming surrounding whitespace;
+            a whitespace-only title is rejected.
+        description:
+          type: string
+          maxLength: 2000
+          description: Optional, defaults to an empty string.
+        status:
+          $ref: "#/components/schemas/WritableStatus"
+          description: Optional, defaults to `todo`. `overdue` is rejected with 400.
+        due_at:
+          type: [string, "null"]
+          format: date-time
+          description: Optional, RFC 3339 (for example `2030-01-01T00:00:00Z`).
+          x-go-type: string
+
+    UpdateTaskRequest:
+      type: object
+      description: |
+        Every field is optional; only the fields that are sent are changed.
+        An empty object is valid and changes nothing. Note that sending
+        `due_at: null` currently counts as "not sent" (the due date is not
+        cleared).
+      properties:
+        title:
+          type: string
+          maxLength: 200
+          description: 1 to 200 characters after trimming; an empty or whitespace-only title is rejected.
+        description:
+          type: string
+          maxLength: 2000
+          description: An empty string is allowed and clears the description.
+        status:
+          $ref: "#/components/schemas/WritableStatus"
+          description: "`overdue` is rejected with 400."
+        due_at:
+          type: [string, "null"]
+          format: date-time
+          description: RFC 3339.
+          x-go-type: string
+
+    Health:
+      type: object
+      required: [status, store]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        store:
+          type: string
+          enum: [ok, unavailable]
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable message.
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed JSON, a validation failure, an invalid query parameter, or an
+        `id` that is not a valid UUID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "invalid input: title must have at least 1 and at most 200 characters"
+
+    NotFound:
+      description: No task with this ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: task not found
+
+    ServiceUnavailable:
+      description: The database timed out or cannot be reached.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: service unavailable
+
+    InternalError:
+      description: Any other error, including a recovered panic. No internal details are exposed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal server error
+

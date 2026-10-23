@@ -1,10 +1,13 @@
+// Command server runs the task-management REST API.
+//
+// It reads its configuration from environment variables, picks the in-memory or
+// Postgres store, serves HTTP, and shuts down gracefully on SIGINT/SIGTERM.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +25,24 @@ import (
 	"github.com/dung204/taskapi/internal/worker"
 )
 
-func run(ctx context.Context, cfg config, logger *slog.Logger) error {
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
+
+	logger, err := newLogger(cfg)
+	if err != nil {
+		return err
+	}
+
 	var store task.Store
 	var handler http.Handler
 
@@ -38,30 +58,26 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		)
 
 		start := time.Now()
-		db, err := connectDB(cfg.dbURL)
+		pool, err := connectDB(ctx, cfg.dbURL)
 		elapsed := time.Since(start)
 
 		if err != nil {
 			return fmt.Errorf("connect to database %q on %q: %w", cfg.dbName, cfg.dbHost, err)
 		}
 		defer func() {
-			if err := db.Close(); err != nil {
-				logger.Warn("database close failed", "error", err)
-				return
-			}
-
+			pool.Close()
 			logger.Info("database closed")
 		}()
 
 		logger.Info("database connected",
-			"max_open_conns", db.Stats().MaxOpenConnections,
+			"max_open_conns", pool.Stat().MaxConns(),
 			"connect_duration_ms", float64(elapsed)/float64(time.Millisecond),
 			"host", cfg.dbHost,
 			"database", cfg.dbName,
 		)
 
-		store = postgres.NewTaskStore(db)
-		handler = httpapi.NewHandler(store, logger, db)
+		store = postgres.NewTaskStore(pool)
+		handler = httpapi.NewHandler(store, logger, pool)
 	}
 
 	srv := &http.Server{
@@ -73,7 +89,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	ln, err := net.Listen("tcp", srv.Addr)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("open port: %w", err)
 	}
@@ -135,27 +151,8 @@ func run(ctx context.Context, cfg config, logger *slog.Logger) error {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		<-ctx.Done()
-		stop()
-	}()
-
-	cfg, err := loadConfig(os.Getenv)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	l, err := newLogger(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := run(ctx, cfg, l); err != nil {
-		l.Error("server failed", "error", err)
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "server failed:", "error:", err)
 		os.Exit(1)
 	}
 }

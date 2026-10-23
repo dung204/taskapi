@@ -1,3 +1,4 @@
+// Package memory implements [task.Store] in process memory.
 package memory
 
 import (

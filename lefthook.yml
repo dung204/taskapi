@@ -1,0 +1,15 @@
+# Lefthook: git hooks, driven by the Makefile so local checks match CI.
+# Install the hooks once with:  lefthook install   (or: make hooks)
+# Skip hooks for one command:   LEFTHOOK=0 git commit ...   (or git commit --no-verify)
+
+pre-commit:
+  parallel: true
+  commands:
+    lint:
+      glob: "*.go"
+      run: make lint
+
+pre-push:
+  commands:
+    test:
+      run: make test

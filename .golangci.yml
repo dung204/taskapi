@@ -1,0 +1,85 @@
+# golangci-lint v2 configuration.
+# Check it with:  bin/golangci-lint config verify
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    # Bugs and correctness
+    - bodyclose       # unclosed http response bodies
+    - contextcheck    # functions that should pass their ctx down
+    - errorlint       # use errors.Is/As and %w
+    - exhaustive      # switch over Status etc. must cover every value
+    - nilerr          # returning nil when err != nil
+    - noctx           # http/sql calls without a context
+    - rowserrcheck    # sql.Rows.Err() checked
+    - sqlclosecheck   # sql.Rows / Stmt closed
+    - sloglint        # consistent log/slog usage
+    # Style and hygiene
+    - copyloopvar
+    - errname         # sentinel errors named ErrXxx, error types XxxError
+    - gocritic
+    - intrange        # for i := range n
+    - misspell
+    - nolintlint      # //nolint directives must be justified and used
+    - revive
+    - thelper         # test helpers call t.Helper()
+    - unconvert       # unnecessary type conversions
+    - usestdlibvars   # http.MethodGet instead of "GET"
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    exhaustive:
+      default-signifies-exhaustive: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    sloglint:
+      no-mixed-args: true
+      static-msg: true
+    revive:
+      rules:
+        - name: exported
+          disabled: true   # no doc-comment police on a small app
+        - name: package-comments
+          disabled: true
+
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # Tests may ignore a few things that matter in production code.
+      - path: _test\.go
+        linters:
+          - errcheck
+    generated: lax
+    paths:
+      - (^|/)sqlcgen(/|$)
+      - (^|/)oapigen(/|$)
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/dung204/taskapi
+  exclusions:
+    paths:
+      - (^|/)sqlcgen(/|$)
+      - (^|/)oapigen(/|$)
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
