@@ -3,4 +3,5 @@ package: oapigen
 output: oapi.gen.go
 generate:
   models: true
+  strict-server: true
   chi-server: true

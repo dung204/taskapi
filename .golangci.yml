@@ -63,7 +63,7 @@ linters:
     generated: lax
     paths:
       - (^|/)sqlcgen(/|$)
-      - (^|/)oapigen(/|$)
+      - '.*\.gen\.go$'
 
 formatters:
   enable:
@@ -78,7 +78,7 @@ formatters:
   exclusions:
     paths:
       - (^|/)sqlcgen(/|$)
-      - (^|/)oapigen(/|$)
+      - '.*\.gen\.go$'
 
 issues:
   max-issues-per-linter: 0

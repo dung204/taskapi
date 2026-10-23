@@ -1,7 +1,6 @@
 package oapigen
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -41,7 +40,7 @@ func parseTime(field string, s *string) (*time.Time, error) {
 	return &t, nil
 }
 
-func (r CreateTaskRequest) ToNewParams() (task.NewParams, error) {
+func (r *CreateTaskRequest) ToNewParams() (task.NewParams, error) {
 	dueAt, err := parseTime("due_at", r.DueAt)
 	if err != nil {
 		return task.NewParams{}, err
@@ -62,7 +61,7 @@ func (r CreateTaskRequest) ToNewParams() (task.NewParams, error) {
 	}, nil
 }
 
-func (r UpdateTaskRequest) ToPatch() (task.Patch, error) {
+func (r *UpdateTaskRequest) ToPatch() (task.Patch, error) {
 	dueAt, err := parseTime("due_at", r.DueAt)
 	if err != nil {
 		return task.Patch{}, err
@@ -86,7 +85,7 @@ func (p ListTasksParams) ToListFilter() (task.ListFilter, error) {
 	limit := defaultLimit
 	if p.Limit != nil {
 		if *p.Limit < 1 {
-			return task.ListFilter{}, errors.New("limit is invalid")
+			return task.ListFilter{}, fmt.Errorf("%w: limit is invalid", task.ErrInvalidInput)
 		}
 		limit = min(*p.Limit, maxLimit)
 	}
@@ -94,7 +93,7 @@ func (p ListTasksParams) ToListFilter() (task.ListFilter, error) {
 	offset := defaultOffset
 	if p.Offset != nil {
 		if *p.Offset < 0 {
-			return task.ListFilter{}, errors.New("offset is invalid")
+			return task.ListFilter{}, fmt.Errorf("%w: offset is invalid", task.ErrInvalidInput)
 		}
 		offset = *p.Offset
 	}

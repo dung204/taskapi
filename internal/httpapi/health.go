@@ -2,8 +2,9 @@ package httpapi
 
 import (
 	"context"
-	"net/http"
 	"time"
+
+	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 )
 
 type storePinger interface {
@@ -20,16 +21,21 @@ func newHealthHandler(p storePinger) *healthHandler {
 	}
 }
 
-func (handler *healthHandler) CheckHealth(w http.ResponseWriter, r *http.Request) {
+func (handler *healthHandler) CheckHealth(ctx context.Context, request oapigen.CheckHealthRequestObject) (oapigen.CheckHealthResponseObject, error) {
 	if handler.pinger != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		if err := handler.pinger.Ping(ctx); err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "store": "unavailable"})
-			return
+			return oapigen.CheckHealth503JSONResponse{
+				Status: oapigen.HealthStatusUnavailable,
+				Store:  oapigen.HealthStoreUnavailable,
+			}, nil
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "store": "ok"})
+	return oapigen.CheckHealth200JSONResponse{
+		Status: oapigen.HealthStatusOk,
+		Store:  oapigen.HealthStoreOk,
+	}, nil
 }

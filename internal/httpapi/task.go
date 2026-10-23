@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/dung204/taskapi/internal/httpapi/oapigen"
@@ -25,141 +24,106 @@ func newTaskHandler(s task.Store, l *slog.Logger) *taskHandler {
 
 const dbTimeout = 3 * time.Second
 
-func (h *taskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
-	var req oapigen.CreateTaskRequest
-
-	err := readJSON(w, r, &req)
+func (h *taskHandler) CreateTask(ctx context.Context, request oapigen.CreateTaskRequestObject) (oapigen.CreateTaskResponseObject, error) {
+	p, err := request.Body.ToNewParams()
 	if err != nil {
-		return
-	}
-
-	p, err := req.ToNewParams()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, err
 	}
 
 	t, err := task.New(p, time.Now())
-
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	created, err := h.store.Create(ctx, *t)
-
-	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, oapigen.ToAPITask(created))
-}
-
-func (h *taskHandler) ListTasks(w http.ResponseWriter, r *http.Request, params oapigen.ListTasksParams) {
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	f, err := params.ToListFilter()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-	}
-
-	tasks, err := h.store.List(ctx, f)
-
-	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
-		return
-	}
-
-	writeJSON(w, http.StatusOK, oapigen.ToAPITasks(tasks))
-}
-
-func (h *taskHandler) GetTask(w http.ResponseWriter, r *http.Request, id oapigen.TaskId) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	t, err := h.store.Get(ctx, id)
-
-	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
-		return
-	}
-
-	writeJSON(w, http.StatusOK, oapigen.ToAPITask(t))
-}
-
-func (h *taskHandler) UpdateTask(w http.ResponseWriter, r *http.Request, id oapigen.TaskId) {
-	var req oapigen.UpdateTaskRequest
-	err := readJSON(w, r, &req)
-
-	if err != nil {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	p, err := req.ToPatch()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	t, err := h.store.Update(ctx, id, p)
-
-	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
-		return
-	}
-
-	writeJSON(w, http.StatusOK, oapigen.ToAPITask(t))
-}
-
-func (h *taskHandler) DeleteTask(w http.ResponseWriter, r *http.Request, id oapigen.TaskId) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	err := h.store.Delete(ctx, id)
-
-	if hasError := handleStoreError(ctx, w, h.logger, err); hasError {
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func handleStoreError(ctx context.Context, w http.ResponseWriter, l *slog.Logger, err error) bool {
 	if errors.Is(err, task.ErrInvalidInput) {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return true
-	}
-
-	if errors.Is(err, task.ErrNotFound) {
-		writeError(w, http.StatusNotFound, err.Error())
-		return true
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		return true
-	}
-
-	if errors.Is(err, task.ErrServiceUnavailable) {
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
-		l.ErrorContext(ctx, "store error", "error", err)
-		return true
-	}
-
-	if errors.Is(err, context.Canceled) {
-		return true
+		return oapigen.CreateTask400JSONResponse{Error: err.Error()}, nil
 	}
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		l.ErrorContext(ctx, "store error", "error", err)
-		return true
+		return nil, err
 	}
 
-	return false
+	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+
+	created, err := h.store.Create(dbCtx, *t)
+	if err != nil {
+		return nil, err
+	}
+
+	return oapigen.CreateTask201JSONResponse(oapigen.ToAPITask(created)), nil
+}
+
+func (h *taskHandler) ListTasks(ctx context.Context, request oapigen.ListTasksRequestObject) (oapigen.ListTasksResponseObject, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+
+	f, err := request.Params.ToListFilter()
+	if errors.Is(err, task.ErrInvalidInput) {
+		return oapigen.ListTasks400JSONResponse{Error: err.Error()}, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	ts, err := h.store.List(dbCtx, f)
+	if err != nil {
+		return nil, err
+	}
+
+	return oapigen.ListTasks200JSONResponse(oapigen.ToAPITasks(ts)), nil
+}
+
+func (h *taskHandler) GetTask(ctx context.Context, request oapigen.GetTaskRequestObject) (oapigen.GetTaskResponseObject, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+
+	t, err := h.store.Get(dbCtx, request.Id)
+	if errors.Is(err, task.ErrNotFound) {
+		return oapigen.GetTask404JSONResponse{Error: err.Error()}, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return oapigen.GetTask200JSONResponse(oapigen.ToAPITask(t)), nil
+}
+
+func (h *taskHandler) UpdateTask(ctx context.Context, request oapigen.UpdateTaskRequestObject) (oapigen.UpdateTaskResponseObject, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+
+	p, err := request.Body.ToPatch()
+	if errors.Is(err, task.ErrInvalidInput) {
+		return oapigen.UpdateTask400JSONResponse{Error: err.Error()}, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := h.store.Update(dbCtx, request.Id, p)
+	if errors.Is(err, task.ErrNotFound) {
+		return oapigen.UpdateTask404JSONResponse{Error: err.Error()}, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return oapigen.UpdateTask200JSONResponse(oapigen.ToAPITask(t)), nil
+}
+
+func (h *taskHandler) DeleteTask(ctx context.Context, request oapigen.DeleteTaskRequestObject) (oapigen.DeleteTaskResponseObject, error) {
+	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+
+	err := h.store.Delete(dbCtx, request.Id)
+	if errors.Is(err, task.ErrNotFound) {
+		return oapigen.DeleteTask404JSONResponse{Error: err.Error()}, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return oapigen.DeleteTask204Response{}, nil
 }
