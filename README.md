@@ -1,6 +1,6 @@
 # taskapi
 
-A REST API for managing tasks, written in plain Go: the standard library only (`net/http`, `log/slog`, `database/sql`, `testing`, ...), with no web framework, router, ORM, logging or test libraries. The one external dependency is the [`pgx`](https://github.com/jackc/pgx) PostgreSQL driver, used through `database/sql`.
+A REST API for managing tasks, written in Go with the standard library (`net/http`, `log/slog`, `testing`, ...) plus a few small dependencies: the [`chi`](https://github.com/go-chi/chi) router, the [`pgx`](https://github.com/jackc/pgx) PostgreSQL driver, and the [`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen) runtime. The routes and request/response types are generated from the OpenAPI spec in `internal/httpapi/docs/openapi.yml`.
 
 > **Status:** early development. The task endpoints, the in-memory and PostgreSQL stores, and a background worker that marks overdue tasks are implemented. There is no migration runner yet, so the database schema is applied by hand (see [PostgreSQL](#postgresql)).
 
@@ -69,8 +69,10 @@ When `STORE=postgres`, `/healthz` also pings the database.
 | `GET`    | `/tasks/{id}` | Get one task. Returns `404` if it does not exist.            |
 | `PATCH`  | `/tasks/{id}` | Update some fields of a task. Returns the updated task.      |
 | `DELETE` | `/tasks/{id}` | Delete a task. Returns `204`.                                |
+| `GET`    | `/openapi.yaml` | The OpenAPI spec.                                          |
+| `GET`    | `/docs/`      | Swagger UI for the API.                                      |
 
-Any other method on a registered path returns `405 Method Not Allowed`. Errors are returned as `{"error": "message"}`: `400` for invalid input, `404` for an unknown task, `503` when the store is unavailable or times out, and `500` for anything else.
+Any other method on a registered path returns `405 Method Not Allowed`. Errors are returned as `{"error": "message"}`: `400` for invalid input (including a malformed body or bad query parameter), `404` for an unknown task, `503` when the store is unavailable or times out, and `500` for anything else.
 
 Every response carries an `X-Request-ID` header. Send your own (letters, digits and `-`, up to 64 characters) to have it reused, otherwise one is generated.
 
@@ -130,6 +132,7 @@ go build -buildvcs=false ./...   # build
 go vet ./...
 go test ./...
 go test -race ./...
+go generate ./...                # regenerate oapigen after editing internal/httpapi/docs/openapi.yml
 ```
 
 `-buildvcs=false` avoids a VCS-stamping error from `go build` in some environments.
@@ -151,7 +154,9 @@ The memory and PostgreSQL stores share one behaviour suite, `tasktest.TestStore`
 
 ```
 cmd/server/            entry point: config, logger, database connection, graceful shutdown
-internal/httpapi/      routes, handlers, middlewares (request ID, logging, panic recovery), JSON helpers
+internal/httpapi/      chi router, handlers, error mapping, middlewares (request ID, logging, panic recovery)
+  docs/                OpenAPI spec (openapi.yml) and Swagger UI
+  oapigen/             code generated from the spec by oapi-codegen, plus API <-> domain converters
 internal/task/         task model, validation and the Store interface
   tasktest/            shared test helpers and the store behaviour suite
 internal/store/
