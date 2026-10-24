@@ -60,6 +60,15 @@ fmt: $(GOLANGCI_LINT_STAMP) ## Format code (formatters from .golangci.yml)
 fmt-check: $(GOLANGCI_LINT_STAMP) ## Fail if any file is not formatted (no changes written)
 	$(GOLANGCI_LINT) fmt --diff ./...
 
+.PHONY: generate-check
+generate-check: generate ## Fail if generated code is out of date (run on a clean checkout)
+	@test -z "$$(git status --porcelain)" || { git status --short; echo "Generated files are out of date: run make generate and commit."; exit 1; }
+
+.PHONY: tidy-check
+tidy-check: ## Fail if go.mod/go.sum are not tidy (run on a clean checkout)
+	go mod tidy
+	@test -z "$$(git status --porcelain go.mod go.sum)" || { git diff go.mod go.sum; exit 1; }
+
 .PHONY: vet
 vet: ## go vet
 	go vet ./...
@@ -91,8 +100,9 @@ cover: ## Run tests and print coverage per function
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
-.PHONY: check
-check: vet lint test ## Everything CI should run
+# --- CI -----------------------------------------------------------
+.PHONY: ci
+ci: fmt-check vet lint test-db generate-check tidy-check ## Everything CI runs
 
 # --- Build and run -----------------------------------------------------------
 .PHONY: build
