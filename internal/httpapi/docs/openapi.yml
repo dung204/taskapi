@@ -97,13 +97,12 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
 
   /tasks/{id}:
-    parameters:
-      - $ref: "#/components/parameters/TaskId"
-
     get:
       tags: [tasks]
       operationId: getTask
       summary: Get one task
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
       responses:
         "200":
           description: The task
@@ -128,6 +127,8 @@ paths:
         Only the fields present in the body are changed. `updated_at` moves only
         when a field actually changes. The update is atomic: if any field is
         invalid, nothing is changed.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
       requestBody:
         required: true
         content:
@@ -154,6 +155,8 @@ paths:
       tags: [tasks]
       operationId: deleteTask
       summary: Delete a task
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
       responses:
         "204":
           description: Deleted, no body

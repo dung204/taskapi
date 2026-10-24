@@ -50,7 +50,7 @@ func NewHandler(
 
 	r.Get("/openapi.yaml", docs.Spec)
 	r.Method(http.MethodGet, "/docs", http.RedirectHandler("/docs/", http.StatusMovedPermanently))
-	r.Method(http.MethodGet, "/docs/", docs.UI())
+	r.Method(http.MethodGet, "/docs/*", http.StripPrefix("/docs/", docs.UI()))
 
 	return r
 }
