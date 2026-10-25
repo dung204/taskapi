@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type config struct {
 	logLevel       slog.Level
 	workerEnabled  bool
 	workerInterval time.Duration
+	pprofAddr      string
 }
 
 type lookupFunc = func(string) string
@@ -123,6 +125,15 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		}
 	}
 
+	pprofAddr := getenv(lookup, "PPROF_ADDR", "")
+	if pprofAddr != "" {
+		if _, port, err := net.SplitHostPort(pprofAddr); err != nil {
+			errs = append(errs, fmt.Errorf(`PPROF_ADDR must look like ":6060" or "localhost:6060", got %q`, pprofAddr))
+		} else if _, ok := isValidPort(port); !ok {
+			errs = append(errs, fmt.Errorf(`PPROF_ADDR has an invalid port, got %q`, pprofAddr))
+		}
+	}
+
 	return config{
 		port:           port,
 		store:          store,
@@ -133,5 +144,6 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		logLevel:       logLevel,
 		workerEnabled:  workerEnabled,
 		workerInterval: workerInterval,
+		pprofAddr:      pprofAddr,
 	}, errors.Join(errs...)
 }

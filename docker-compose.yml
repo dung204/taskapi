@@ -41,8 +41,10 @@ services:
       STORE: postgres
       DATABASE_URL: postgres://${POSTGRES_USER:-taskapi}:${POSTGRES_PASSWORD:-taskapi}@db:5432/${POSTGRES_DB:-taskapi}?sslmode=disable
       LOG_FORMAT: json
+      PPROF_ADDR: ":6060"
     ports:
       - "8080:8080"
+      - "127.0.0.1:6060:6060"
     depends_on:
       db:
         condition: service_healthy

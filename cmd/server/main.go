@@ -131,6 +131,14 @@ func run() error {
 		}()
 	}
 
+	if cfg.pprofAddr != "" {
+		stopPprof, err := startPprof(ctx, cfg.pprofAddr, logger)
+		if err != nil {
+			return err
+		}
+		defer stopPprof()
+	}
+
 	select {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received", "cause", context.Cause(ctx))
@@ -148,6 +156,7 @@ func run() error {
 		}
 		return fmt.Errorf("serve: %w", err)
 	}
+
 }
 
 func main() {

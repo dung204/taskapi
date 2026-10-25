@@ -16,6 +16,7 @@ func defaultConfig() config {
 		logLevel:       slog.LevelInfo,
 		workerEnabled:  true,
 		workerInterval: 30 * time.Second,
+		pprofAddr:      "",
 	}
 }
 
@@ -54,6 +55,9 @@ func checkConfig(t *testing.T, got, want config) {
 	if got.dbName != want.dbName {
 		t.Errorf("dbName = %v, want %v", got.dbName, want.dbName)
 	}
+	if got.pprofAddr != want.pprofAddr {
+		t.Errorf("pprofAddr = %q, want %q", got.pprofAddr, want.pprofAddr)
+	}
 }
 
 func TestLoadConfig(t *testing.T) {
@@ -71,12 +75,14 @@ func TestLoadConfig(t *testing.T) {
 		{name: "valid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "json"}, want: cfgWith(func(c *config) { c.logFormat = "json" })},
 		{name: "valid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "debug"}, want: cfgWith(func(c *config) { c.logLevel = slog.LevelDebug })},
 		{name: "valid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "false"}, want: cfgWith(func(c *config) { c.workerEnabled = false })},
+		{name: "valid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ":6060"}, want: cfgWith(func(c *config) { c.pprofAddr = ":6060" })},
 
 		{name: "invalid PORT", env: map[string]string{"PORT": "abc"}, wantErr: []string{"PORT", "abc"}},
 		{name: "invalid STORE", env: map[string]string{"STORE": "foo"}, wantErr: []string{"STORE", "foo"}},
 		{name: "invalid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "loud"}, wantErr: []string{"LOG_LEVEL", "loud"}},
 		{name: "invalid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "yaml"}, wantErr: []string{"LOG_FORMAT", "yaml"}},
 		{name: "invalid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "maybe"}, wantErr: []string{"WORKER_ENABLED", "maybe"}},
+		{name: "invalid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": "6060"}, wantErr: []string{"PPROF_ADDR", "6060"}},
 		{name: "multiple errors", env: map[string]string{"PORT": "abc", "STORE": "foo", "LOG_LEVEL": "loud"}, wantErr: []string{"PORT", "abc", "STORE", "foo", "LOG_LEVEL", "loud"}},
 
 		{
