@@ -26,6 +26,16 @@ SQUAWK_STAMP   := bin/.squawk-$(SQUAWK_VERSION)
 
 MIGRATIONS_DIR := migrations
 
+COVER_PROFILE := coverage.out
+COVER_MIN ?= 70
+
+# These are excluded from test coverage:
+# - *.gen.go, sqlcgen: Generated code
+# - tasktest, logtest: test utilities
+# - docs: embedded Swaager (OpenAPI) document
+# - cmd/server/{main,db,logger,pprof}.go: mostly wires libraries up and bootstraps the server
+COVER_EXCLUDE := \.gen\.go|/sqlcgen/|/tasktest/|/logtest/|/docs/|cmd/server/(main|db|logger|pprof)\.go
+
 .PHONY: help
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-16s %s\n", $$1, $$2}' Makefile
@@ -96,13 +106,43 @@ test-db: ## Run tests including Postgres store (TRUNCATES the tasks table of TES
 	go test -race -shuffle=on -count=1 ./...
 
 .PHONY: cover
-cover: ## Run tests and print coverage per function
-	go test -race -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out
+cover: ## Tests with coverage (writes coverage.out; Postgres tests need TEST_DATABASE_URL)
+	go test -race -shuffle=on -count=1 -coverpkg=./... -coverprofile=$(COVER_PROFILE).raw ./...
+	grep -v -E '$(COVER_EXCLUDE)' $(COVER_PROFILE).raw > $(COVER_PROFILE)
+	go tool cover -func=$(COVER_PROFILE) | tail -n 1
+
+.PHONY: cover-check
+cover-check: ## Fail if total coverage is below COVER_MIN (run after `make cover`)
+	@test -f $(COVER_PROFILE) || { echo "$(COVER_PROFILE) not found: run make cover first."; exit 1; }
+	@total=$$(go tool cover -func=$(COVER_PROFILE) | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { \
+		if (t+0 < m+0) { printf "coverage %.1f%% is below the floor of %s%%\n", t, m; exit 1 } \
+		printf "coverage %.1f%% (floor %s%%)\n", t, m \
+	}'
+
+.PHONY: cover-html
+cover-html: cover ## Write coverage.html
+	go tool cover -html=$(COVER_PROFILE) -o coverage.html
+
+.PHONY: cover-summary
+cover-summary: ## Print a Markdown coverage summary (used by CI)
+	@echo "### Test coverage"
+	@echo
+	@echo "**Total: $$(go tool cover -func=$(COVER_PROFILE) | awk '/^total:/ {print $$3}')** (floor: $(COVER_MIN)%)"
+	@echo
+	@echo "Lowest-covered functions:"
+	@echo
+	@echo "| Function | Coverage |"
+	@echo "|---|---|"
+	@go tool cover -func=$(COVER_PROFILE) | grep -v '^total:' | sort -k3 -n | head -10 | awk '{printf "| `%s` (%s) | %s |\n", $$2, $$1, $$3}'
 
 # --- CI -----------------------------------------------------------
+.PHONY: _require-test-db
+_require-test-db:
+	@test -n "$${TEST_DATABASE_URL:-}" || { echo "TEST_DATABASE_URL is not set: Postgres tests would be skipped."; exit 1; }
+
 .PHONY: ci
-ci: fmt-check vet lint test-db gen-check tidy-check ## Everything CI runs
+ci: fmt-check vet lint test-db gen-check tidy-check _require-test-db cover cover-check ## Everything CI runs
 
 # --- Build and run -----------------------------------------------------------
 .PHONY: build

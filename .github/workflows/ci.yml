@@ -37,3 +37,17 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make ci
+
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('coverage.out') != '' }}
+        run: make cover-summary >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Coverage HTML report
+        if: ${{ !cancelled() && hashFiles('coverage.out') != '' }}
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && hashFiles('coverage.html') != '' }}
+        with:
+          name: coverage
+          path: coverage.html
