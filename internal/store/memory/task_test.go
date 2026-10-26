@@ -13,3 +13,10 @@ func TestTaskStore(t *testing.T) {
 		return NewTaskStore()
 	})
 }
+
+func BenchmarkTaskStore(b *testing.B) {
+	tasktest.BenchmarkStore(b, func(tb testing.TB) task.Store {
+		tb.Helper()
+		return NewTaskStore()
+	})
+}

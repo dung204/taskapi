@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/go-chi/chi/v5 v5.5.0
+	github.com/google/go-cmp v0.7.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/pressly/goose/v3 v3.29.0

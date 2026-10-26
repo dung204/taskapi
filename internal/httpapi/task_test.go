@@ -12,6 +12,9 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 	"github.com/dung204/taskapi/internal/logtest"
 	"github.com/dung204/taskapi/internal/store/memory"
@@ -44,21 +47,11 @@ func apiTaskWith(mod func(*task.Task)) oapigen.Task {
 	return oapigen.ToAPITask(taskWith(mod))
 }
 
-// checkAPITask adapts oapigen.Task to the task.Task that tasktest.CheckTask expects.
-func checkAPITask(t *testing.T, got, want oapigen.Task) {
-	t.Helper()
-	toTask := func(a oapigen.Task) task.Task {
-		return task.Task{
-			ID:          a.Id,
-			Title:       a.Title,
-			Description: a.Description,
-			Status:      a.Status,
-			DueAt:       a.DueAt,
-			CreatedAt:   a.CreatedAt,
-			UpdatedAt:   a.UpdatedAt,
-		}
+func checkAPITask(tb testing.TB, got, want oapigen.Task, opts ...cmp.Option) {
+	tb.Helper()
+	if diff := cmp.Diff(want, got, opts...); diff != "" {
+		tb.Errorf("task mismatch (-want +got):\n%s", diff)
 	}
-	tasktest.CheckTask(t, toTask(got), toTask(want))
 }
 
 func TestCreateTask(t *testing.T) {
@@ -124,11 +117,7 @@ func TestCreateTask(t *testing.T) {
 
 			if tt.wantTask != nil {
 				got := decodeResponseBody[oapigen.Task](t, res.Body)
-
-				tt.wantTask.Id = got.Id
-				tt.wantTask.CreatedAt = got.CreatedAt
-				tt.wantTask.UpdatedAt = got.UpdatedAt
-				checkAPITask(t, got, *tt.wantTask)
+				checkAPITask(t, got, *tt.wantTask, cmpopts.IgnoreFields(oapigen.Task{}, "Id", "CreatedAt", "UpdatedAt"))
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -653,8 +642,7 @@ func TestUpdateTask(t *testing.T) {
 				gotTask := decodeResponseBody[oapigen.Task](t, res.Body)
 				// We don't focus on the UpdatedAt field here
 				// since it's in a separate suite for Patch() method of Task
-				gotTask.UpdatedAt = tt.wantTask.UpdatedAt
-				checkAPITask(t, gotTask, *tt.wantTask)
+				checkAPITask(t, gotTask, *tt.wantTask, cmpopts.IgnoreFields(oapigen.Task{}, "UpdatedAt"))
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -798,8 +786,8 @@ func TestHandleStoreError(t *testing.T) {
 		wantStatusCode  int
 		wantErrContains []string
 		wantHidden      []string
-		wantEmptyBody   bool           // the handler writes nothing (client went away)
-		wantLogs        []logtest.Want // records logged by handleStoreError, before "request completed"
+		wantEmptyBody   bool            // the handler writes nothing (client went away)
+		wantLogs        []logtest.Entry // records logged by handleStoreError, before "request completed"
 	}{
 		{
 			name:            "generic error",
@@ -807,14 +795,14 @@ func TestHandleStoreError(t *testing.T) {
 			wantStatusCode:  http.StatusInternalServerError,
 			wantErrContains: []string{"internal"},
 			wantHidden:      []string{"oops"},
-			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errGeneric}}},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errGeneric}}},
 		},
 		{
 			name:            "service unavailable",
 			err:             task.ErrServiceUnavailable,
 			wantStatusCode:  http.StatusServiceUnavailable,
 			wantErrContains: []string{"service unavailable"},
-			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": task.ErrServiceUnavailable}}},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": task.ErrServiceUnavailable}}},
 		},
 		{
 			name:            "wrapped service unavailable",
@@ -822,7 +810,7 @@ func TestHandleStoreError(t *testing.T) {
 			wantStatusCode:  http.StatusServiceUnavailable,
 			wantErrContains: []string{"service unavailable"},
 			wantHidden:      []string{"get task"},
-			wantLogs:        []logtest.Want{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errUnavailable}}},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errUnavailable}}},
 		},
 		{
 			name:            "deadline exceeded",
@@ -850,6 +838,8 @@ func TestHandleStoreError(t *testing.T) {
 			wantEmptyBody:  true,
 		},
 	}
+
+	ignoreAttrs := []string{"duration_ms", "request_id", "method", "path", "stack"}
 
 	for _, ec := range errCases {
 		for _, ep := range storeEndpoints {
@@ -889,12 +879,12 @@ func TestHandleStoreError(t *testing.T) {
 				if ec.wantStatusCode >= http.StatusInternalServerError {
 					completedLevel = slog.LevelError
 				}
-				wantLogs := append(slices.Clone(ec.wantLogs), logtest.Want{
+				wantLogs := append(slices.Clone(ec.wantLogs), logtest.Entry{
 					Level: completedLevel,
 					Msg:   "request completed",
 					Attrs: map[string]any{"status": int64(ec.wantStatusCode)},
 				})
-				logtest.CheckLogRecords(t, logRec.Records(), wantLogs...)
+				logtest.CheckEntries(t, logRec.Entries(), wantLogs, logtest.IgnoreAttrs(ignoreAttrs...))
 			})
 		}
 	}

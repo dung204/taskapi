@@ -69,11 +69,11 @@ func TestHandler(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", reqIDHeader, got, wantReqID)
 		}
 
-		logtest.CheckLogRecords(t, logRec.Records(), logtest.Want{
+		logtest.CheckEntries(t, logRec.Entries(), []logtest.Entry{{
 			Level: slog.LevelInfo,
 			Msg:   "request completed",
 			Attrs: map[string]any{"request_id": wantReqID},
-		})
+		}}, logtest.OnlyAttrs("request_id"))
 	})
 
 	t.Run("panic recovered", func(t *testing.T) {
@@ -98,18 +98,22 @@ func TestHandler(t *testing.T) {
 			t.Fatalf("body leaks panic value: %q", errorMsg)
 		}
 
-		logtest.CheckLogRecords(
-			t, logRec.Records(),
-			logtest.Want{
-				Level: slog.LevelError,
-				Msg:   "panic recovered",
-				Attrs: map[string]any{"panic": "boom"},
+		logtest.CheckEntries(
+			t,
+			logRec.Entries(),
+			[]logtest.Entry{
+				{
+					Level: slog.LevelError,
+					Msg:   "panic recovered",
+					Attrs: map[string]any{"panic": "boom"},
+				},
+				{
+					Level: slog.LevelError,
+					Msg:   "request completed",
+					Attrs: map[string]any{"status": int64(500)},
+				},
 			},
-			logtest.Want{
-				Level: slog.LevelError,
-				Msg:   "request completed",
-				Attrs: map[string]any{"status": int64(500)},
-			},
+			logtest.IgnoreAttrs("duration_ms", "stack", "method", "path", "request_id"),
 		)
 	})
 }

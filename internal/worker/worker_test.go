@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -54,14 +55,14 @@ var testTick = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 func TestScanOverdue(t *testing.T) {
 	errBoom := errors.New("boom")
 	tests := []struct {
-		name       string
-		script     []result
-		wantRecord logtest.Want
+		name   string
+		script []result
+		want   logtest.Entry
 	}{
-		{"marks some", []result{{marked: 3}}, logtest.Want{Level: slog.LevelInfo, Msg: "overdue scan completed", Attrs: map[string]any{"count_updated": int64(3)}}},
-		{"marks none", []result{{marked: 0}}, logtest.Want{Level: slog.LevelDebug, Msg: "overdue scan completed", Attrs: map[string]any{"count_updated": int64(0)}}},
-		{"store error", []result{{err: errBoom}}, logtest.Want{Level: slog.LevelError, Msg: "mark overdue failed", Attrs: map[string]any{"error": errBoom}}},
-		{"store panic", []result{{boom: "boom"}}, logtest.Want{Level: slog.LevelError, Msg: "panic recovered", Attrs: map[string]any{"panic": "boom"}}},
+		{"marks some", []result{{marked: 3}}, logtest.Entry{Level: slog.LevelInfo, Msg: "overdue scan completed", Attrs: map[string]any{"count_updated": int64(3)}}},
+		{"marks none", []result{{marked: 0}}, logtest.Entry{Level: slog.LevelDebug, Msg: "overdue scan completed", Attrs: map[string]any{"count_updated": int64(0)}}},
+		{"store error", []result{{err: errBoom}}, logtest.Entry{Level: slog.LevelError, Msg: "mark overdue failed", Attrs: map[string]any{"error": errBoom}}},
+		{"store panic", []result{{boom: "boom"}}, logtest.Entry{Level: slog.LevelError, Msg: "panic recovered", Attrs: map[string]any{"panic": "boom"}}},
 	}
 
 	for _, tt := range tests {
@@ -75,7 +76,7 @@ func TestScanOverdue(t *testing.T) {
 				t.Fatalf("MarkOverdue calls = %d, want 1", len(s.calls))
 			}
 
-			logtest.CheckLogRecords(t, rec.Records(), tt.wantRecord)
+			logtest.CheckEntries(t, rec.Entries(), []logtest.Entry{tt.want}, logtest.IgnoreAttrs("stack", "duration_ms"))
 		})
 	}
 
@@ -114,7 +115,7 @@ func TestRun(t *testing.T) {
 		done := make(chan struct{})
 
 		wantIntervalValue := 5 * time.Millisecond
-		wantRecord := logtest.Want{
+		want := logtest.Entry{
 			Level: slog.LevelInfo,
 			Msg:   "worker started",
 			Attrs: map[string]any{"interval": wantIntervalValue.String()},
@@ -129,12 +130,12 @@ func TestRun(t *testing.T) {
 		cancel()
 		<-done // wait for close(done) to finish then read the logs
 
-		gotRecs := rec.Find(wantRecord.Msg)
-		if len(gotRecs) != 1 {
-			t.Fatalf("%q log records count = %d, want 1", wantRecord.Msg, len(gotRecs))
+		got := rec.EntriesByMsg(want.Msg)
+		if len(got) != 1 {
+			t.Fatalf("%q log records count = %d, want 1", want.Msg, len(got))
 		}
 
-		logtest.CheckLogRecord(t, gotRecs[0], wantRecord)
+		logtest.CheckEntry(t, got[0], want)
 	})
 
 	t.Run("context closed", func(t *testing.T) {
@@ -143,7 +144,7 @@ func TestRun(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		wg := &sync.WaitGroup{}
 
-		wantRecord := logtest.Want{
+		want := logtest.Entry{
 			Level: slog.LevelInfo,
 			Msg:   "worker stopped",
 		}
@@ -153,12 +154,12 @@ func TestRun(t *testing.T) {
 		cancel()
 		wg.Wait()
 
-		gotRecs := rec.Find(wantRecord.Msg)
-		if len(gotRecs) != 1 {
-			t.Fatalf("%q log records count = %d, want 1", wantRecord.Msg, len(gotRecs))
+		got := rec.EntriesByMsg(want.Msg)
+		if len(got) != 1 {
+			t.Fatalf("%q log records count = %d, want 1", want.Msg, len(got))
 		}
 
-		logtest.CheckLogRecord(t, gotRecs[0], wantRecord)
+		logtest.CheckEntry(t, got[0], want)
 
 	})
 
@@ -171,12 +172,12 @@ func TestRun(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan struct{})
 
-		wantRecoveredRec := logtest.Want{
+		wantRecovered := logtest.Entry{
 			Level: slog.LevelError,
 			Msg:   "panic recovered",
 			Attrs: map[string]any{"panic": "boom"},
 		}
-		wantCompletedRec := logtest.Want{
+		wantCompleted := logtest.Entry{
 			Level: slog.LevelInfo,
 			Msg:   "overdue scan completed",
 			Attrs: map[string]any{"count_updated": int64(3)},
@@ -191,24 +192,20 @@ func TestRun(t *testing.T) {
 		cancel()
 		<-done
 
-		recoveredRecs := rec.Find(wantRecoveredRec.Msg)
-		if len(recoveredRecs) != 1 {
-			t.Fatalf("%q log records count = %d, want 1", wantRecoveredRec.Msg, len(recoveredRecs))
+		gotRecovered := rec.EntriesByMsg(wantRecovered.Msg)
+		if len(gotRecovered) != 1 {
+			t.Fatalf("%q log records count = %d, want 1", wantRecovered.Msg, len(gotRecovered))
 		}
-		logtest.CheckLogRecord(t, recoveredRecs[0], wantRecoveredRec)
+		logtest.CheckEntry(t, gotRecovered[0], wantRecovered, logtest.IgnoreAttrs("stack"))
 
 		// Later ticks may also log "overdue scan completed" (with count_updated = 0)
 		// before cancel() lands, so only look at the scan that marked 3 tasks.
-		var completedRecs []slog.Record
-		for _, r := range rec.Find(wantCompletedRec.Msg) {
-			v, ok := logtest.Attrs(r)["count_updated"]
-			if ok && v.Kind() == slog.KindInt64 && v.Int64() == 3 {
-				completedRecs = append(completedRecs, r)
-			}
+		gotCompleted := slices.DeleteFunc(rec.EntriesByMsg(wantCompleted.Msg), func(e logtest.Entry) bool {
+			return !e.HasAttr("count_updated", int64(3))
+		})
+		if len(gotCompleted) != 1 {
+			t.Fatalf("%q log records with count_updated = 3 count = %d, want 1", wantCompleted.Msg, len(gotCompleted))
 		}
-		if len(completedRecs) != 1 {
-			t.Fatalf("%q log records with count_updated = 3 count = %d, want 1", wantCompletedRec.Msg, len(completedRecs))
-		}
-		logtest.CheckLogRecord(t, completedRecs[0], wantCompletedRec)
+		logtest.CheckEntry(t, gotCompleted[0], wantCompleted, logtest.IgnoreAttrs("duration_ms"))
 	})
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	"github.com/dung204/taskapi/internal/task"
 )
 
@@ -282,10 +284,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 		want.Status = status
 		want.DueAt = &due
 
-		// updated_at comes from the store's clock, so skip it by equalizing.
-		want.UpdatedAt = got.UpdatedAt
-
-		CheckTask(t, got, want)
+		CheckTask(t, got, want, cmpopts.IgnoreFields(task.Task{}, "UpdatedAt"))
 	})
 
 	t.Run("create then get again", func(t *testing.T) {

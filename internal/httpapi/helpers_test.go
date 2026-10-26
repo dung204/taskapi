@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 	"github.com/dung204/taskapi/internal/logtest"
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
@@ -96,13 +97,9 @@ func decodeResponseBody[T any](tb testing.TB, body io.ReadCloser) T {
 	return dst
 }
 
-type errorResponse struct {
-	Message string `json:"error"`
-}
-
 func getErrorMessageFromResponseBody(tb testing.TB, body io.ReadCloser) string {
 	tb.Helper()
-	return decodeResponseBody[errorResponse](tb, body).Message
+	return decodeResponseBody[oapigen.Error](tb, body).Error
 }
 
 func checkErrorMesssage(t *testing.T, msg string, wantErrContains []string) {

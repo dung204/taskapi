@@ -4,12 +4,48 @@ package logtest
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
+
+type Entry struct {
+	Level slog.Level
+	Msg   string
+	Attrs map[string]any
+}
+
+func (e Entry) Attr[T any](key string) (T, bool) {
+	v, ok := e.Attrs[key].(T)
+	return v, ok
+}
+
+func (e Entry) HasAttr(key string, want any) bool {
+	got, ok := e.Attrs[key]
+	return ok && cmp.Equal(got, want, cmpopts.EquateErrors())
+}
+
+func toEntry(r slog.Record) Entry {
+	var attrs map[string]any
+	if r.NumAttrs() > 0 {
+		attrs = make(map[string]any, r.NumAttrs())
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.Resolve().Any()
+			return true
+		})
+	}
+
+	return Entry{
+		Level: r.Level,
+		Msg:   r.Message,
+		Attrs: attrs,
+	}
+}
 
 type Recorder struct {
 	mu      *sync.Mutex
@@ -60,91 +96,63 @@ func (r *Recorder) Records() []slog.Record {
 	return slices.Clone(*r.records)
 }
 
-func (r *Recorder) Find(msg string) []slog.Record {
+func (r *Recorder) Entries() []Entry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	out := make([]slog.Record, 0)
-	for _, rec := range *r.records {
-		if rec.Message == msg {
-			out = append(out, rec)
-		}
+	recs := *r.records
+	entries := make([]Entry, len(recs))
+
+	for i, rec := range recs {
+		entries[i] = toEntry(rec)
 	}
 
-	return out
+	return entries
 }
 
-func Attrs(rec slog.Record) map[string]slog.Value {
-	m := map[string]slog.Value{}
-	rec.Attrs(func(a slog.Attr) bool {
-		m[a.Key] = a.Value
-		return true
+func (r *Recorder) EntriesByMsg(msg string) []Entry {
+	return slices.DeleteFunc(r.Entries(), func(e Entry) bool {
+		return e.Msg != msg
 	})
-	return m
 }
 
-func MustAttr[T any](t *testing.T, attrs map[string]slog.Value, key string) T {
-	t.Helper()
-	v, ok := attrs[key]
-	if !ok {
-		t.Fatalf("missing attr %q", key)
-	}
-
-	got, ok := v.Any().(T)
-	if !ok {
-		var zero T
-		t.Fatalf("attr %q is %T(%v), want type %T", key, v.Any(), v.Any(), zero)
-	}
-	return got
+func IgnoreAttrs(keys ...string) cmp.Option {
+	return cmpopts.IgnoreMapEntries(func(k string, _ any) bool {
+		return slices.Contains(keys, k)
+	})
 }
 
-type Want struct {
-	Level slog.Level
-	Msg   string
-	Attrs map[string]any
+func OnlyAttrs(keys ...string) cmp.Option {
+	return cmpopts.IgnoreMapEntries(func(k string, _ any) bool {
+		return !slices.Contains(keys, k)
+	})
 }
 
-func CheckLogRecord(tb testing.TB, got slog.Record, want Want) {
+func CheckEntry(tb testing.TB, got, want Entry, opts ...cmp.Option) {
 	tb.Helper()
 
-	if got.Level != want.Level {
-		tb.Errorf("level = %v, want %v", got.Level, want.Level)
-	}
+	opts = append(opts, cmpopts.EquateErrors())
 
-	if got.Message != want.Msg {
-		tb.Errorf("message = %q, want %q", got.Message, want.Msg)
-	}
-
-	attrs := Attrs(got)
-	for k, want := range want.Attrs {
-		v, ok := attrs[k]
-		if !ok {
-			tb.Errorf("missing attribute %q", k)
-			continue
-		}
-
-		switch w := want.(type) {
-		case error:
-			got, _ := v.Any().(error)
-			if !errors.Is(got, w) {
-				tb.Errorf("attribute %q = error %q, want error matching %q", k, got, w)
-			}
-		default:
-			if val := v.Any(); val != want {
-				tb.Errorf("attribute %q = %T(%v), want %T(%v)", k, val, val, want, want)
-			}
-		}
+	if diff := cmp.Diff(want, got, opts...); diff != "" {
+		tb.Errorf("log entry mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func CheckLogRecords(tb testing.TB, got []slog.Record, want ...Want) {
+func CheckEntries(tb testing.TB, got, want []Entry, opts ...cmp.Option) {
 	tb.Helper()
 
-	if len(got) != len(want) {
-		tb.Fatalf("log records count = %d, want %d", len(got), len(want))
-	}
+	opts = append([]cmp.Option{cmpopts.EquateErrors()}, opts...)
 
-	for i := range got {
-		CheckLogRecord(tb, got[i], want[i])
+	if diff := cmp.Diff(want, got, opts...); diff != "" {
+		tb.Errorf("log entries mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func CheckEntryPartial(tb testing.TB, got, want Entry, opts ...cmp.Option) {
+	tb.Helper()
+
+	keys := slices.Collect(maps.Keys(want.Attrs))
+	opts = append(opts, OnlyAttrs(keys...))
+
+	CheckEntry(tb, got, want, opts...)
 }

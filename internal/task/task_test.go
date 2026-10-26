@@ -7,6 +7,8 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/task/tasktest"
 )
@@ -428,8 +430,7 @@ func TestNew(t *testing.T) {
 				t.Fatalf("task.Patch() unexpected error: %v", gotErr)
 			}
 
-			tt.wantTask.ID = gotTask.ID
-			tasktest.CheckTask(t, *gotTask, tt.wantTask)
+			tasktest.CheckTask(t, *gotTask, tt.wantTask, cmpopts.IgnoreFields(task.Task{}, "ID"))
 		})
 	}
 }
