@@ -26,8 +26,12 @@ SQUAWK_STAMP   := bin/.squawk-$(SQUAWK_VERSION)
 
 MIGRATIONS_DIR := migrations
 
+MODULE = $(shell go list -m)
+
 COVER_PROFILE := coverage.out
 COVER_MIN ?= 70
+COVER_LINK_SHA  ?= $(GITHUB_SHA)
+COVER_LINK_BASE ?= $(if $(GITHUB_REPOSITORY),$(GITHUB_SERVER_URL)/$(GITHUB_REPOSITORY)/blob/$(COVER_LINK_SHA))
 
 # These are excluded from test coverage:
 # - *.gen.go, sqlcgen: Generated code
@@ -132,9 +136,9 @@ cover-summary: ## Print a Markdown coverage summary (used by CI)
 	@echo
 	@echo "Lowest-covered functions:"
 	@echo
-	@echo "| Function | Coverage |"
-	@echo "|---|---|"
-	@go tool cover -func=$(COVER_PROFILE) | grep -v '^total:' | sort -k3 -n | head -10 | awk '{printf "| `%s` (%s) | %s |\n", $$2, $$1, $$3}'
+	@echo "| Function | Location | Coverage |"
+	@echo "|---|---|---|"
+	@go tool cover -func=$(COVER_PROFILE) | grep -v '^total:' | sort -k3 -n | head -10 | awk -v mod="$(MODULE)/" -v base="$(COVER_LINK_BASE)" -f scripts/cover-rows.awk
 
 # --- CI -----------------------------------------------------------
 .PHONY: _require-test-db
