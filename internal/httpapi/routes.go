@@ -29,6 +29,7 @@ func NewHandler(
 	store task.Store,
 	logger *slog.Logger,
 	pinger storePinger,
+	metrics *Metrics,
 ) http.Handler {
 	srv := &server{
 		healthHandler: newHealthHandler(pinger),
@@ -37,7 +38,12 @@ func NewHandler(
 
 	r := chi.NewRouter()
 
-	r.Use(requestIDMiddleware, loggingMiddleware(logger), recoverMiddleware(logger))
+	mws := []middleware{requestIDMiddleware}
+	if metrics != nil {
+		mws = append(mws, metrics.Middleware)
+	}
+	mws = append(mws, loggingMiddleware(logger), recoverMiddleware(logger))
+	r.Use(mws...)
 
 	strict := oapigen.NewStrictHandlerWithOptions(srv, nil, oapigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  srv.handleRequestError,

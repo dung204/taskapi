@@ -22,6 +22,7 @@ type config struct {
 	workerEnabled  bool
 	workerInterval time.Duration
 	pprofAddr      string
+	metricsAddr    string
 }
 
 type lookupFunc = func(string) string
@@ -40,6 +41,23 @@ func isValidPort(port string) (parsedPort int, ok bool) {
 		return 0, false
 	}
 	return parsed, true
+}
+
+func checkListenAddr(name, value string) error {
+	if value == "" {
+		return nil
+	}
+
+	_, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf(`%s must look like ":6060" or "localhost:6060", got %q`, name, value)
+	}
+
+	if _, ok := isValidPort(port); !ok {
+		return fmt.Errorf(`%s has an invalid port, got %q`, name, value)
+	}
+
+	return nil
 }
 
 var errDatabaseURL = errors.New("DATABASE_URL must look like postgres://user:password@host:5432/dbname")
@@ -126,13 +144,10 @@ func loadConfig(lookup lookupFunc) (config, error) {
 	}
 
 	pprofAddr := getenv(lookup, "PPROF_ADDR", "")
-	if pprofAddr != "" {
-		if _, port, err := net.SplitHostPort(pprofAddr); err != nil {
-			errs = append(errs, fmt.Errorf(`PPROF_ADDR must look like ":6060" or "localhost:6060", got %q`, pprofAddr))
-		} else if _, ok := isValidPort(port); !ok {
-			errs = append(errs, fmt.Errorf(`PPROF_ADDR has an invalid port, got %q`, pprofAddr))
-		}
-	}
+	errs = append(errs, checkListenAddr("PPROF_ADDR", pprofAddr))
+
+	metricsAddr := getenv(lookup, "METRICS_ADDR", "")
+	errs = append(errs, checkListenAddr("METRICS_ADDR", metricsAddr))
 
 	return config{
 		port:           port,
@@ -145,5 +160,6 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		workerEnabled:  workerEnabled,
 		workerInterval: workerInterval,
 		pprofAddr:      pprofAddr,
+		metricsAddr:    metricsAddr,
 	}, errors.Join(errs...)
 }

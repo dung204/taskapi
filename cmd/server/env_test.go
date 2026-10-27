@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func defaultConfig() config {
@@ -26,37 +28,12 @@ func cfgWith(mod func(*config)) config {
 	return c
 }
 
-func checkConfig(t *testing.T, got, want config) {
+func checkConfig(t *testing.T, got, want config, opts ...cmp.Option) {
 	t.Helper()
-	if got.port != want.port {
-		t.Errorf("port = %v, want %v", got.port, want.port)
-	}
-	if got.store != want.store {
-		t.Errorf("store = %q, want %q", got.store, want.store)
-	}
-	if got.logFormat != want.logFormat {
-		t.Errorf("logFormat = %q, want %q", got.logFormat, want.logFormat)
-	}
-	if got.logLevel != want.logLevel {
-		t.Errorf("logLevel = %q, want %q", got.logLevel.String(), want.logLevel.String())
-	}
-	if got.workerEnabled != want.workerEnabled {
-		t.Errorf("workerEnabled = %t, want %t", got.workerEnabled, want.workerEnabled)
-	}
-	if got.workerInterval != want.workerInterval {
-		t.Errorf("workerInterval = %v, want %v", got.workerInterval, want.workerInterval)
-	}
-	if got.dbURL != want.dbURL {
-		t.Errorf("dbURL = %v, want %v", got.dbURL, want.dbURL)
-	}
-	if got.dbHost != want.dbHost {
-		t.Errorf("dbHost = %v, want %v", got.dbHost, want.dbHost)
-	}
-	if got.dbName != want.dbName {
-		t.Errorf("dbName = %v, want %v", got.dbName, want.dbName)
-	}
-	if got.pprofAddr != want.pprofAddr {
-		t.Errorf("pprofAddr = %q, want %q", got.pprofAddr, want.pprofAddr)
+
+	opts = append(opts, cmp.AllowUnexported(config{}))
+	if diff := cmp.Diff(want, got, opts...); diff != "" {
+		t.Errorf("env mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -76,6 +53,7 @@ func TestLoadConfig(t *testing.T) {
 		{name: "valid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "debug"}, want: cfgWith(func(c *config) { c.logLevel = slog.LevelDebug })},
 		{name: "valid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "false"}, want: cfgWith(func(c *config) { c.workerEnabled = false })},
 		{name: "valid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ":6060"}, want: cfgWith(func(c *config) { c.pprofAddr = ":6060" })},
+		{name: "valid METRICS_ADDR", env: map[string]string{"METRICS_ADDR": "localhost:9090"}, want: cfgWith(func(c *config) { c.metricsAddr = "localhost:9090" })},
 
 		{name: "invalid PORT", env: map[string]string{"PORT": "abc"}, wantErr: []string{"PORT", "abc"}},
 		{name: "invalid STORE", env: map[string]string{"STORE": "foo"}, wantErr: []string{"STORE", "foo"}},
@@ -83,6 +61,7 @@ func TestLoadConfig(t *testing.T) {
 		{name: "invalid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "yaml"}, wantErr: []string{"LOG_FORMAT", "yaml"}},
 		{name: "invalid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "maybe"}, wantErr: []string{"WORKER_ENABLED", "maybe"}},
 		{name: "invalid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": "6060"}, wantErr: []string{"PPROF_ADDR", "6060"}},
+		{name: "invalid METRICS_ADDR", env: map[string]string{"METRICS_ADDR": "9090"}, wantErr: []string{"METRICS_ADDR", "9090"}},
 		{name: "multiple errors", env: map[string]string{"PORT": "abc", "STORE": "foo", "LOG_LEVEL": "loud"}, wantErr: []string{"PORT", "abc", "STORE", "foo", "LOG_LEVEL", "loud"}},
 
 		{
@@ -182,6 +161,54 @@ func TestIsValidPort(t *testing.T) {
 
 			if tt.wantOK != gotOK {
 				t.Errorf("isValidPort(%q) ok = %t, want %t", tt.in, gotOK, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestCheckListenAddr(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "empty value", value: ""},
+		{name: "port only", value: ":6060"},
+		{name: "hostname and port", value: "localhost:6060"},
+		{name: "IPv4 and port", value: "127.0.0.1:6060"},
+		{name: "IPv6 and port", value: "[::1]:6060"},
+		{name: "max port", value: "0.0.0.0:65535"},
+
+		{name: "missing colon", value: "6060", wantErr: true},
+		{name: "missing port", value: "localhost", wantErr: true},
+		{name: "empty port", value: "localhost:", wantErr: true},
+		{name: "too many colons", value: "localhost:6060:1", wantErr: true},
+		{name: "URL instead of address", value: "http://localhost:6060", wantErr: true},
+		{name: "non-numerical port", value: ":abc", wantErr: true},
+		{name: "port zero", value: ":0", wantErr: true},
+		{name: "negative port", value: ":-1", wantErr: true},
+		{name: "port out of range", value: ":65536", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkListenAddr("PPROF_ADDR", tt.value)
+
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("checkListenAddr(%q) unexpected error: %v", tt.value, err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("checkListenAddr(%q) error = nil, want error", tt.value)
+			}
+
+			for _, s := range []string{"PPROF_ADDR", tt.value} {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("checkListenAddr(%q) error = %q, want it to contain %q", tt.value, err, s)
+				}
 			}
 		})
 	}

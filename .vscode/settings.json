@@ -30,5 +30,8 @@
   "files.readonlyInclude": {
     "**/sqlcgen/*": true,
     "**/*.gen.go": true
-  }
+  },
+  "yaml.disableSchemaDetection": [
+    "**/grafana/provisioning/datasources/prometheus.yml"
+  ]
 }

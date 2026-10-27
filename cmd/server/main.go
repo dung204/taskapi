@@ -26,11 +26,11 @@ import (
 )
 
 func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, stopServer := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopServer()
 	go func() {
 		<-ctx.Done()
-		stop()
+		stopServer()
 	}()
 
 	cfg, err := loadConfig(os.Getenv)
@@ -45,11 +45,13 @@ func run() error {
 
 	var store task.Store
 	var handler http.Handler
+	reg := newRegistry()
+	metrics := httpapi.NewMetrics(reg)
 
 	switch cfg.store {
 	case "memory":
 		store = memory.NewTaskStore()
-		handler = httpapi.NewHandler(store, logger, nil)
+		handler = httpapi.NewHandler(store, logger, nil, metrics)
 
 	case "postgres":
 		logger.Debug("connecting to database",
@@ -76,8 +78,9 @@ func run() error {
 			"database", cfg.dbName,
 		)
 
+		reg.MustRegister(postgres.NewPoolCollector(pool))
 		store = postgres.NewTaskStore(pool)
-		handler = httpapi.NewHandler(store, logger, pool)
+		handler = httpapi.NewHandler(store, logger, pool, metrics)
 	}
 
 	srv := &http.Server{
@@ -131,13 +134,11 @@ func run() error {
 		}()
 	}
 
-	if cfg.pprofAddr != "" {
-		stopPprof, err := startPprof(ctx, cfg.pprofAddr, logger)
-		if err != nil {
-			return err
-		}
-		defer stopPprof()
+	stopDiag, err := startDiagnostics(ctx, cfg, reg, logger)
+	if err != nil {
+		return fmt.Errorf("diagnostics: %w", err)
 	}
+	defer stopDiag()
 
 	select {
 	case <-ctx.Done():
