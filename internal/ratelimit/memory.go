@@ -62,8 +62,8 @@ func (l *MemoryLimiter) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case t := <-ticker.C:
-			l.cleanup(t)
+		case <-ticker.C:
+			l.cleanup(l.now())
 		}
 	}
 }

@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A task-management REST API in Go (module `github.com/dung204/taskapi`, Go 1.27). Routing is the `chi` router. The routes and handler glue are generated from the OpenAPI spec (`internal/httpapi/docs/openapi.yml`) by `oapi-codegen` in strict-server mode, so a wrong method on a registered path gets 405 from chi.
 
-**Keep dependencies minimal.** Beyond the standard library (`log/slog`, UUIDs, `testing`), the runtime dependencies are the `pgx` Postgres driver, the `chi` router and the `oapi-codegen` runtime used by the generated code. Do not add other libraries (web frameworks, ORMs, logging libraries, assertion/mock libraries, config loaders, ...). If something seems to need one, write it with the standard library, or ask first.
+**Keep dependencies minimal.** Beyond the standard library (`log/slog`, UUIDs, `testing`), the runtime dependencies are the `pgx` Postgres driver, the `chi` router, the `oapi-codegen` runtime used by the generated code, `prometheus/client_golang` (metrics) and `golang.org/x/time/rate` (the token bucket in the rate limiter). `github.com/google/go-cmp` is the one test-only library, used by the `tasktest` and `logtest` helpers. Do not add other libraries (web frameworks, ORMs, logging libraries, assertion/mock libraries, config loaders, ...). If something seems to need one, write it with the standard library, or ask first.
 
-Implemented: task CRUD, an in-memory store, a Postgres store, a background worker that marks overdue tasks, request-ID/logging/recover middlewares, and graceful shutdown. Not implemented: a migration runner.
+Implemented: task CRUD, an in-memory store, a Postgres store, a background worker that marks overdue tasks, request-ID/logging/recover middlewares, per-IP rate limiting (429 + `Retry-After`), Prometheus metrics, an optional pprof server, and graceful shutdown. Migrations are applied with goose (`make migrate-up`, or the `migrate` service in `docker-compose.yml`).
 
 ## Commands
 
@@ -18,7 +18,12 @@ go build ./...                           # build (if it fails with a VCS-stampin
 go vet ./...
 go test -race ./...
 go test ./internal/httpapi -run TestName # run a single test
+go test -bench . ./internal/store/memory # store benchmarks (tasktest.BenchmarkStore)
 ```
+
+The `Makefile` wraps these (`make help` lists every target). Notable ones: `make ci` (what CI runs: fmt-check, vet, lint, test-db, gen-check, tidy-check, cover, cover-check; it needs `TEST_DATABASE_URL`), `make cover` (writes `coverage.out`, excluding generated code, `tasktest`, `logtest`, `docs` and the bootstrap files listed in `COVER_EXCLUDE`; `make cover-check` fails below `COVER_MIN`, default 70), `make lint` / `make fmt` (golangci-lint, downloaded into `bin/` by `make tools`), `make gen`, and `make migrate-up|down|status|create`. `lefthook.yml` runs `make lint` on pre-commit and `make test` on pre-push (`make hooks` installs them). `.github/workflows/ci.yml` runs `make ci` against a Postgres service and uploads the coverage report.
+
+`docker-compose.yml` brings up the whole stack: `db` (Postgres 17), `migrate` (goose, from the `Dockerfile`'s `migrate` target), `api` (the `server` target, `STORE=postgres`), `prometheus` (`prometheus.yml`) and `grafana` (provisioned from `grafana/`; `GRAFANA_ADMIN_PASSWORD` must be set in `.env`). `scripts/loadtest.sh` generates mixed traffic for the dashboards and `scripts/ratelimit-demo.sh` trips the rate limiter.
 
 The Postgres store tests are skipped unless `TEST_DATABASE_URL` is set, and **every run truncates the `tasks` table**, so it must point at a dedicated database whose schema is already applied:
 
@@ -39,20 +44,26 @@ TEST_DATABASE_URL='postgres://user:password@localhost:5432/test_tasks?sslmode=di
 - `LOG_LEVEL`: `debug` | `info` | `warn` | `error`, default `info`
 - `WORKER_ENABLED`: default `true`
 - `WORKER_INTERVAL`: Go duration, default `30s`
+- `PPROF_ADDR`: listen address (`:6060`, `127.0.0.1:6060`) for the pprof server; unset means no pprof server
+- `METRICS_ADDR`: listen address for the Prometheus `GET /metrics` server; unset means no metrics server
+- `RATE_LIMIT_RPS`: allowed requests per second per client (float, default `10`); `0` disables rate limiting
+- `RATE_LIMIT_BURST`: bucket size per client (integer ≥ 1, default `20`); only validated when rate limiting is enabled
+- `GRAFANA_ADMIN_PASSWORD`: only used by `docker-compose.yml`, never by the server
 - `TEST_DATABASE_URL`: only used by the Postgres store tests, never by the server
 
 ## Architecture
 
-- `cmd/server`: entry point. `main.go` loads the config, builds the logger (`logger.go`), picks the store by `STORE` (the Postgres one connects through `db.go`), builds the handler with `httpapi.NewHandler(store, logger, pinger)`, starts the worker if enabled, and runs an `http.Server` with explicit timeouts. SIGINT/SIGTERM trigger a graceful shutdown that also stops the worker.
-- `internal/httpapi`: the HTTP layer. `routes.go` builds the chi router with the middlewares (request ID → logging → panic recovery, in `middlewares.go`), mounts the generated strict handler, and serves `/openapi.yaml` and the Swagger UI at `/docs/`. It also holds the error handlers: `handleParamError` (bad path/query params → 400), `handleRequestError` (bad JSON body → 400) and `handleResponseError`, which maps errors returned by handlers to responses. `task.go` and `health.go` implement the generated `oapigen.StrictServerInterface`: handlers take a typed request object and return a typed response (`oapigen.CreateTask201JSONResponse`, ...) or an error. `health.go` pings the store when it has a pinger (the Postgres pool). `helpers.go` has `writeJSON` / `writeError`.
+- `cmd/server`: entry point. `main.go` loads the config, builds the logger (`logger.go`), picks the store by `STORE` (the Postgres one connects through `db.go`), builds the handler with `httpapi.NewHandler(store, logger, pinger, metrics, limiter)` (`metrics` and `limiter` may be nil), starts the worker and the rate limiter's cleanup loop if enabled, and runs an `http.Server` with explicit timeouts. `diagnostics.go` builds the Prometheus registry (Go and process collectors, plus the HTTP, pool and limiter metrics) and starts the optional pprof and metrics servers on their own listeners, separate from the API port. SIGINT/SIGTERM trigger a graceful shutdown that also stops the worker and the limiter loop.
+- `internal/httpapi`: the HTTP layer. `routes.go` builds the chi router with the middlewares (request ID → metrics, if given → logging → panic recovery, in `middlewares.go`), mounts the generated strict handler, and serves `/openapi.yaml` and the Swagger UI at `/docs/`. It also holds the error handlers: `handleParamError` (bad path/query params → 400), `handleRequestError` (bad JSON body → 400) and `handleResponseError`, which maps errors returned by handlers to responses. `task.go` and `health.go` implement the generated `oapigen.StrictServerInterface`: handlers take a typed request object and return a typed response (`oapigen.CreateTask201JSONResponse`, ...) or an error. `health.go` pings the store when it has a pinger (the Postgres pool). `helpers.go` has `writeJSON` / `writeError`. `metrics.go` has `Metrics` (`http_requests_total`, `http_request_duration_seconds`, `http_requests_in_flight`, labelled by method, chi route pattern and status). `limiter.go` has the `Limiter` interface, the `byIP` key function (IPv6 addresses are masked to their /64) and the `rateLimit` middleware, which answers 429 with a `Retry-After` header.
 - `internal/httpapi/docs`: the embedded OpenAPI spec (`openapi.yml`, the source of truth for the API) and Swagger UI.
 - `internal/httpapi/oapigen`: `oapi.gen.go` is generated by `oapi-codegen` (`oapi-codegen.yml`: models, chi server, strict server) and must not be edited; regenerate with `go generate ./...`. `helpers.go` converts between API types and domain types (`ToNewParams`, `ToPatch`, `ToListFilter`, `ToAPITask`).
 - `internal/task`: the domain. `task.go` has `Task`, `New` and `Patch`, which own all validation. `store.go` has the `Store` interface plus `ListFilter` and `Patch`. `errors.go` has the sentinel errors (`ErrNotFound`, `ErrInvalidInput`, `ErrServiceUnavailable`, ...).
-- `internal/store/memory` and `internal/store/postgres`: the two `task.Store` implementations. Handlers only see the interface.
+- `internal/store/memory` and `internal/store/postgres`: the two `task.Store` implementations. Handlers only see the interface. The Postgres store uses sqlc-generated code (`queries/`, `sqlcgen/`, `sqlc.yml`; regenerate with `make gen-sql`), and `metrics.go` there has `PoolCollector`, which exports the pgx pool stats as `db_pool_*` metrics.
+- `internal/ratelimit`: `MemoryLimiter`, a per-key token bucket (`x/time/rate`) kept in process memory, so limits are neither shared between instances nor kept across restarts. `Run` evicts idle keys and `Len` feeds the `rate_limit_tracked_clients` gauge.
 - `internal/worker`: `Run` ticks every `WORKER_INTERVAL` and calls `Store.MarkOverdue`. A panic in a scan is recovered and logged, and the loop keeps going.
-- `internal/task/tasktest`: shared test code: `CheckTask` / `CheckPatch` and `TestStore`, the behaviour suite that both stores run.
+- `internal/task/tasktest`: shared test code: `CheckTask` / `CheckPatch` and `TestStore`, the behaviour suite that both stores run, plus `BenchmarkStore`, the benchmark both stores share.
 - `internal/logtest`: an in-memory `slog.Handler` (`logtest.New()`) for asserting on log records.
-- `migrations/`: numbered SQL files for the Postgres schema. They are applied by hand with `psql`.
+- `migrations/`: goose SQL migrations for the Postgres schema (linted by squawk via `make lint-sql`).
 
 Flow: `main` picks a store from `STORE` → passes it into `httpapi.NewHandler` → handlers call the `task.Store` interface and never a concrete backend.
 
@@ -63,11 +74,13 @@ Flow: `main` picks a store from `STORE` → passes it into `httpapi.NewHandler` 
 - **`Task.Patch` is atomic**: it works on a copy and only commits when every field is valid. `updated_at` moves only when a field really changes.
 - **`overdue` is system-set**: it is valid for filtering (`GET /tasks?status=overdue`) but rejected in a patch or create. Only `MarkOverdue` sets it, and it skips `done` tasks and tasks without `due_at`.
 - **Every store test goes in `tasktest.TestStore`** so memory and Postgres stay in sync.
-- **Test style**: table-driven, using the `tasktest` checkers. To skip a field in `CheckTask`, set that field equal in `got` and `want` before calling it, rather than adding a flag.
+- **Test style**: table-driven, using the `tasktest` checkers. `CheckTask` / `CheckPatch` take `go-cmp` options, so to skip a field pass `cmpopts.IgnoreFields(task.Task{}, "UpdatedAt")` rather than adding a flag or equalizing the values by hand.
+- **Rate limiting is per route, not in `r.Use`**: it is passed as `oapigen.ChiServerOptions.Middlewares`, because `r.Use` middlewares run before chi matches a route and a rejected request would reach the metrics with the route label `unknown`. `/docs` and `/openapi.yaml` are therefore not limited. A new response status needs a `429` entry in `openapi.yml` for every operation.
+- **Wrapping `http.ResponseWriter`**: wrappers like `statusRecorder` must keep an `Unwrap() http.ResponseWriter` method so `http.ResponseController` still reaches the real writer.
 - **API changes start in `docs/openapi.yml`**: edit the spec, run `go generate ./...`, then implement the new interface methods. Handlers return expected errors (`ErrNotFound`, `ErrInvalidInput`) as the typed `...400/404JSONResponse` and everything else as an `error` for `handleResponseError`.
 - **`handleResponseError`** has deliberate asymmetries: `DeadlineExceeded` returns 503 without logging, `ErrServiceUnavailable` returns 503 and logs, and `context.Canceled` writes nothing (the access log then shows 200). Converters in `oapigen/helpers.go` must wrap `task.ErrInvalidInput` so these are reported as 400.
 
 ## Known issues in existing code
 
 - `writeJSON` in `internal/httpapi/helpers.go` still prints errors to stderr instead of using the logger (marked `TODO`).
-- There is no migration runner; the schema must be applied by hand.
+- The rate limiter keys clients by `RemoteAddr` only (`byIP`), so behind a proxy or Docker network every client shares one bucket; `X-Forwarded-For` is not honoured.

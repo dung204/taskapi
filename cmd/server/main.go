@@ -62,7 +62,7 @@ func run() error {
 		limiter = ml
 
 		reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name:        "rate_limit_tracked_clients",
+			Name:        "rate_limiter_tracked_clients",
 			Help:        "Number of keys currently tracked by the in-memory rate limiter.",
 			ConstLabels: prometheus.Labels{"limiter": "global"},
 		}, func() float64 { return float64(ml.Len()) }))
@@ -152,7 +152,6 @@ func run() error {
 	}()
 
 	if ml != nil {
-
 		wg.Go(func() { ml.Run(bgCtx) })
 	}
 

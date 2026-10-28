@@ -34,7 +34,7 @@ func rateLimit(l Limiter, key keyFunc) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if k, ok := key(r); ok {
-				if ok, retryAfter := l.Allow(k); !ok {
+				if allowed, retryAfter := l.Allow(k); !allowed {
 					secs := int(math.Ceil(retryAfter.Seconds()))
 					w.Header().Set("Retry-After", strconv.Itoa(max(1, secs)))
 					writeError(w, http.StatusTooManyRequests, "too many requests")

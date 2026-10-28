@@ -39,7 +39,7 @@ services:
     environment:
       PORT: "8080"
       STORE: postgres
-      DATABASE_URL: postgres://${POSTGRES_USER:-taskapi}:${POSTGRES_PASSWORD:-taskapi}@db:5432/${POSTGRES_DB:-taskapi}?sslmode=disable&pool_max_conns=2
+      DATABASE_URL: postgres://${POSTGRES_USER:-taskapi}:${POSTGRES_PASSWORD:-taskapi}@db:5432/${POSTGRES_DB:-taskapi}?sslmode=disable
       LOG_FORMAT: json
       PPROF_ADDR: ":6060"
       METRICS_ADDR: ":9091"
