@@ -19,6 +19,8 @@ func defaultConfig() config {
 		workerEnabled:  true,
 		workerInterval: 30 * time.Second,
 		pprofAddr:      "",
+		rateLimitRPS:   10,
+		rateLimitBurst: 20,
 	}
 }
 
@@ -54,6 +56,8 @@ func TestLoadConfig(t *testing.T) {
 		{name: "valid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "false"}, want: cfgWith(func(c *config) { c.workerEnabled = false })},
 		{name: "valid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ":6060"}, want: cfgWith(func(c *config) { c.pprofAddr = ":6060" })},
 		{name: "valid METRICS_ADDR", env: map[string]string{"METRICS_ADDR": "localhost:9090"}, want: cfgWith(func(c *config) { c.metricsAddr = "localhost:9090" })},
+		{name: "valid RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "0.5"}, want: cfgWith(func(c *config) { c.rateLimitRPS = 0.5 })},
+		{name: "valid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "5"}, want: cfgWith(func(c *config) { c.rateLimitBurst = 5 })},
 
 		{name: "invalid PORT", env: map[string]string{"PORT": "abc"}, wantErr: []string{"PORT", "abc"}},
 		{name: "invalid STORE", env: map[string]string{"STORE": "foo"}, wantErr: []string{"STORE", "foo"}},
@@ -62,6 +66,12 @@ func TestLoadConfig(t *testing.T) {
 		{name: "invalid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "maybe"}, wantErr: []string{"WORKER_ENABLED", "maybe"}},
 		{name: "invalid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": "6060"}, wantErr: []string{"PPROF_ADDR", "6060"}},
 		{name: "invalid METRICS_ADDR", env: map[string]string{"METRICS_ADDR": "9090"}, wantErr: []string{"METRICS_ADDR", "9090"}},
+		{name: "non-numerical RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "abc"}, wantErr: []string{"RATE_LIMIT_RPS", "abc"}},
+		{name: "negative RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "-1"}, wantErr: []string{"RATE_LIMIT_RPS", "-1"}},
+		{name: "non-numerical RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "abc"}, wantErr: []string{"RATE_LIMIT_BURST", "abc"}},
+		{name: "fractional RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "1.5"}, wantErr: []string{"RATE_LIMIT_BURST", "1.5"}},
+		{name: "zero RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "0"}, wantErr: []string{"RATE_LIMIT_BURST", "0"}},
+		{name: "negative RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "-5"}, wantErr: []string{"RATE_LIMIT_BURST", "-5"}},
 		{name: "multiple errors", env: map[string]string{"PORT": "abc", "STORE": "foo", "LOG_LEVEL": "loud"}, wantErr: []string{"PORT", "abc", "STORE", "foo", "LOG_LEVEL", "loud"}},
 
 		{
@@ -108,6 +118,23 @@ func TestLoadConfig(t *testing.T) {
 			env:  map[string]string{"WORKER_ENABLED": "false", "WORKER_INTERVAL": "abc"},
 			want: cfgWith(func(c *config) {
 				c.workerEnabled = false
+			}),
+		},
+
+		{
+			name: "RATE_LIMIT_RPS=0 disables rate limiting",
+			env:  map[string]string{"RATE_LIMIT_RPS": "0"},
+			want: cfgWith(func(c *config) {
+				c.rateLimitRPS = 0
+				c.rateLimitBurst = 0
+			}),
+		},
+		{
+			name: "RATE_LIMIT_RPS=0 with invalid RATE_LIMIT_BURST",
+			env:  map[string]string{"RATE_LIMIT_RPS": "0", "RATE_LIMIT_BURST": "abc"},
+			want: cfgWith(func(c *config) {
+				c.rateLimitRPS = 0
+				c.rateLimitBurst = 0
 			}),
 		},
 	}

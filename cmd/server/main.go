@@ -18,7 +18,12 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/time/rate"
+
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/dung204/taskapi/internal/httpapi"
+	"github.com/dung204/taskapi/internal/ratelimit"
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/store/postgres"
 	"github.com/dung204/taskapi/internal/task"
@@ -48,10 +53,25 @@ func run() error {
 	reg := newRegistry()
 	metrics := httpapi.NewMetrics(reg)
 
+	var (
+		ml      *ratelimit.MemoryLimiter // have Run() to run as worker & Len() for metrics
+		limiter httpapi.Limiter          // for NewHandler()
+	)
+	if cfg.rateLimitRPS > 0 {
+		ml = ratelimit.NewMemoryLimiter(rate.Limit(cfg.rateLimitRPS), cfg.rateLimitBurst)
+		limiter = ml
+
+		reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name:        "rate_limit_tracked_clients",
+			Help:        "Number of keys currently tracked by the in-memory rate limiter.",
+			ConstLabels: prometheus.Labels{"limiter": "global"},
+		}, func() float64 { return float64(ml.Len()) }))
+	}
+
 	switch cfg.store {
 	case "memory":
 		store = memory.NewTaskStore()
-		handler = httpapi.NewHandler(store, logger, nil, metrics)
+		handler = httpapi.NewHandler(store, logger, nil, metrics, limiter)
 
 	case "postgres":
 		logger.Debug("connecting to database",
@@ -80,7 +100,7 @@ func run() error {
 
 		reg.MustRegister(postgres.NewPoolCollector(pool))
 		store = postgres.NewTaskStore(pool)
-		handler = httpapi.NewHandler(store, logger, pool, metrics)
+		handler = httpapi.NewHandler(store, logger, pool, metrics, limiter)
 	}
 
 	srv := &http.Server{
@@ -124,14 +144,20 @@ func run() error {
 		return srv.Shutdown(shutdownCtx)
 	}
 
+	wg := &sync.WaitGroup{}
+	bgCtx, cancelBg := context.WithCancel(ctx)
+	defer func() {
+		cancelBg()
+		wg.Wait()
+	}()
+
+	if ml != nil {
+
+		wg.Go(func() { ml.Run(bgCtx) })
+	}
+
 	if cfg.workerEnabled {
-		workerCtx, cancelWorker := context.WithCancel(ctx)
-		wg := &sync.WaitGroup{}
-		wg.Go(func() { worker.Run(workerCtx, store, logger, cfg.workerInterval) })
-		defer func() {
-			cancelWorker()
-			wg.Wait()
-		}()
+		wg.Go(func() { worker.Run(bgCtx, store, logger, cfg.workerInterval) })
 	}
 
 	stopDiag, err := startDiagnostics(ctx, cfg, reg, logger)

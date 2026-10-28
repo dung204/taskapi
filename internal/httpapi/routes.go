@@ -30,6 +30,7 @@ func NewHandler(
 	logger *slog.Logger,
 	pinger storePinger,
 	metrics *Metrics,
+	limiter Limiter,
 ) http.Handler {
 	srv := &server{
 		healthHandler: newHealthHandler(pinger),
@@ -45,12 +46,20 @@ func NewHandler(
 	mws = append(mws, loggingMiddleware(logger), recoverMiddleware(logger))
 	r.Use(mws...)
 
+	// Per-route, not in r.Use: those run before chi matches the route, so a
+	// rejected request would reach the metrics with the route label "unknown".
+	var routeMws []oapigen.MiddlewareFunc
+	if limiter != nil {
+		routeMws = append(routeMws, oapigen.MiddlewareFunc(rateLimit(limiter, byIP)))
+	}
+
 	strict := oapigen.NewStrictHandlerWithOptions(srv, nil, oapigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  srv.handleRequestError,
 		ResponseErrorHandlerFunc: srv.handleResponseError(logger),
 	})
 	oapigen.HandlerWithOptions(strict, oapigen.ChiServerOptions{
 		BaseRouter:       r,
+		Middlewares:      routeMws,
 		ErrorHandlerFunc: srv.handleParamError,
 	})
 

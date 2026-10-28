@@ -23,6 +23,8 @@ type config struct {
 	workerInterval time.Duration
 	pprofAddr      string
 	metricsAddr    string
+	rateLimitRPS   float64
+	rateLimitBurst int
 }
 
 type lookupFunc = func(string) string
@@ -149,6 +151,21 @@ func loadConfig(lookup lookupFunc) (config, error) {
 	metricsAddr := getenv(lookup, "METRICS_ADDR", "")
 	errs = append(errs, checkListenAddr("METRICS_ADDR", metricsAddr))
 
+	rawRateLimitRPS := getenv(lookup, "RATE_LIMIT_RPS", "10")
+	rateLimitRPS, err := strconv.ParseFloat(rawRateLimitRPS, 64)
+	if err != nil || rateLimitRPS < 0 {
+		errs = append(errs, fmt.Errorf(`RATE_LIMIT_RPS must be a positive float number like 0.5, 1 or set to 0 to disable rate limiting, got %q`, rawRateLimitRPS))
+	}
+
+	var rateLimitBurst int
+	if rateLimitRPS > 0 {
+		rawRateLimitBurst := getenv(lookup, "RATE_LIMIT_BURST", "20")
+		rateLimitBurst, err = strconv.Atoi(rawRateLimitBurst)
+		if err != nil || rateLimitBurst < 1 {
+			errs = append(errs, fmt.Errorf(`RATE_LIMIT_BURST must be a positive integer, got %q`, rawRateLimitBurst))
+		}
+	}
+
 	return config{
 		port:           port,
 		store:          store,
@@ -161,5 +178,7 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		workerInterval: workerInterval,
 		pprofAddr:      pprofAddr,
 		metricsAddr:    metricsAddr,
+		rateLimitRPS:   rateLimitRPS,
+		rateLimitBurst: rateLimitBurst,
 	}, errors.Join(errs...)
 }

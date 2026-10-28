@@ -22,7 +22,7 @@ func setupTestWithPinger(t *testing.T, pinger storePinger) (h http.Handler, stor
 	rec = logtest.NewRecorder()
 	store = memory.NewTaskStore()
 	logger := slog.New(NewRequestIDContextHandler(rec))
-	h = NewHandler(store, logger, pinger, nil)
+	h = NewHandler(store, logger, pinger, nil, nil)
 	return h, store, rec
 }
 
@@ -30,7 +30,7 @@ func setupTestWithStore(t *testing.T, store task.Store) (http.Handler, *logtest.
 	t.Helper()
 	rec := logtest.NewRecorder()
 	logger := slog.New(NewRequestIDContextHandler(rec))
-	return NewHandler(store, logger, nil, nil), rec
+	return NewHandler(store, logger, nil, nil, nil), rec
 }
 
 func setupTest(t *testing.T) (h http.Handler, store task.Store, rec *logtest.Recorder) {
@@ -38,7 +38,7 @@ func setupTest(t *testing.T) (h http.Handler, store task.Store, rec *logtest.Rec
 	rec = logtest.NewRecorder()
 	logger := slog.New(NewRequestIDContextHandler(rec))
 	store = memory.NewTaskStore()
-	h = NewHandler(store, logger, nil, nil)
+	h = NewHandler(store, logger, nil, nil, nil)
 	return h, store, rec
 }
 
