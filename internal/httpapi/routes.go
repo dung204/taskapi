@@ -19,7 +19,6 @@ import (
 )
 
 type server struct {
-	*healthHandler
 	*taskHandler
 }
 
@@ -28,13 +27,11 @@ var _ oapigen.StrictServerInterface = (*server)(nil)
 func NewHandler(
 	store task.Store,
 	logger *slog.Logger,
-	pinger storePinger,
 	metrics *Metrics,
 	limiter Limiter,
 ) http.Handler {
 	srv := &server{
-		healthHandler: newHealthHandler(pinger),
-		taskHandler:   newTaskHandler(store, logger),
+		taskHandler: newTaskHandler(store, logger),
 	}
 
 	r := chi.NewRouter()

@@ -38,7 +38,7 @@ func (f *fakeLimiter) Allow(key string) (bool, time.Duration) {
 func setupTestWithLimiter(t *testing.T, store task.Store, l Limiter) http.Handler {
 	t.Helper()
 	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-	return NewHandler(store, logger, nil, nil, l)
+	return NewHandler(store, logger, nil, l)
 }
 
 func TestHandler(t *testing.T) {
@@ -58,7 +58,7 @@ func TestHandler(t *testing.T) {
 
 	t.Run("wrong method", func(t *testing.T) {
 		h, _, _ := setupTest(t)
-		rec, req := prepareTestRequest(t, http.MethodPost, "/healthz", nil)
+		rec, req := prepareTestRequest(t, http.MethodDelete, "/tasks", nil)
 		h.ServeHTTP(rec, req)
 
 		res := rec.Result()
@@ -73,7 +73,7 @@ func TestHandler(t *testing.T) {
 		h, _, logRec := setupTest(t)
 		reqIDHeader := "X-Request-ID"
 		wantReqID := "abc"
-		rec, req := prepareTestRequest(t, http.MethodPost, "/healthz", nil)
+		rec, req := prepareTestRequest(t, http.MethodDelete, "/tasks", nil)
 		req.Header.Set(reqIDHeader, wantReqID)
 		h.ServeHTTP(rec, req)
 
@@ -163,7 +163,7 @@ func TestHandler(t *testing.T) {
 	t.Run("rate limited request keeps its route in the metrics", func(t *testing.T) {
 		reg := prometheus.NewRegistry()
 		logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-		h := NewHandler(memory.NewTaskStore(), logger, nil, NewMetrics(reg), &fakeLimiter{ok: false})
+		h := NewHandler(memory.NewTaskStore(), logger, NewMetrics(reg), &fakeLimiter{ok: false})
 
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks/018f0000-0000-7000-8000-000000000000", nil)
 		h.ServeHTTP(rec, req)
@@ -200,7 +200,7 @@ func TestHandler(t *testing.T) {
 	t.Run("not rate limited", func(t *testing.T) {
 		l := &fakeLimiter{ok: true}
 		h := setupTestWithLimiter(t, memory.NewTaskStore(), l)
-		rec, req := prepareTestRequest(t, http.MethodGet, "/healthz", nil)
+		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.RemoteAddr = "192.0.2.7:4321"
 		h.ServeHTTP(rec, req)
 
@@ -220,7 +220,7 @@ func TestHandler(t *testing.T) {
 	t.Run("request without a client IP is not limited", func(t *testing.T) {
 		l := &fakeLimiter{ok: false}
 		h := setupTestWithLimiter(t, memory.NewTaskStore(), l)
-		rec, req := prepareTestRequest(t, http.MethodGet, "/healthz", nil)
+		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.RemoteAddr = "@"
 		h.ServeHTTP(rec, req)
 

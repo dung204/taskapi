@@ -68,10 +68,11 @@ func run() error {
 		}, func() float64 { return float64(ml.Len()) }))
 	}
 
+	var pinger storePinger
+
 	switch cfg.store {
 	case "memory":
 		store = memory.NewTaskStore()
-		handler = httpapi.NewHandler(store, logger, nil, metrics, limiter)
 
 	case "postgres":
 		logger.Debug("connecting to database",
@@ -100,9 +101,10 @@ func run() error {
 
 		reg.MustRegister(postgres.NewPoolCollector(pool))
 		store = postgres.NewTaskStore(pool)
-		handler = httpapi.NewHandler(store, logger, pool, metrics, limiter)
+		pinger = pool
 	}
 
+	handler = httpapi.NewHandler(store, logger, metrics, limiter)
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.port),
 		Handler:           handler,
@@ -159,11 +161,11 @@ func run() error {
 		wg.Go(func() { worker.Run(bgCtx, store, logger, cfg.workerInterval) })
 	}
 
-	stopDiag, err := startDiagnostics(ctx, cfg, reg, logger)
+	stopInternal, err := startInternalServers(ctx, cfg, reg, pinger, logger)
 	if err != nil {
-		return fmt.Errorf("diagnostics: %w", err)
+		return fmt.Errorf("internal servers: %w", err)
 	}
-	defer stopDiag()
+	defer stopInternal()
 
 	select {
 	case <-ctx.Done():
@@ -186,6 +188,10 @@ func run() error {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck(os.Getenv))
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "server failed:", "error:", err)
 		os.Exit(1)

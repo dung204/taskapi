@@ -19,6 +19,7 @@ func defaultConfig() config {
 		workerEnabled:  true,
 		workerInterval: 30 * time.Second,
 		pprofAddr:      "",
+		opsAddr:        "127.0.0.1:9091",
 		rateLimitRPS:   10,
 		rateLimitBurst: 20,
 	}
@@ -55,7 +56,8 @@ func TestLoadConfig(t *testing.T) {
 		{name: "valid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "debug"}, want: cfgWith(func(c *config) { c.logLevel = slog.LevelDebug })},
 		{name: "valid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "false"}, want: cfgWith(func(c *config) { c.workerEnabled = false })},
 		{name: "valid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ":6060"}, want: cfgWith(func(c *config) { c.pprofAddr = ":6060" })},
-		{name: "valid METRICS_ADDR", env: map[string]string{"METRICS_ADDR": "localhost:9090"}, want: cfgWith(func(c *config) { c.metricsAddr = "localhost:9090" })},
+		{name: "empty PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ""}, want: cfgWith(func(c *config) { c.pprofAddr = "" })},
+		{name: "valid OPS_ADDR", env: map[string]string{"OPS_ADDR": "localhost:9090"}, want: cfgWith(func(c *config) { c.opsAddr = "localhost:9090" })},
 		{name: "valid RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "0.5"}, want: cfgWith(func(c *config) { c.rateLimitRPS = 0.5 })},
 		{name: "valid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "5"}, want: cfgWith(func(c *config) { c.rateLimitBurst = 5 })},
 
@@ -65,9 +67,12 @@ func TestLoadConfig(t *testing.T) {
 		{name: "invalid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "yaml"}, wantErr: []string{"LOG_FORMAT", "yaml"}},
 		{name: "invalid WORKER_ENABLED", env: map[string]string{"WORKER_ENABLED": "maybe"}, wantErr: []string{"WORKER_ENABLED", "maybe"}},
 		{name: "invalid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": "6060"}, wantErr: []string{"PPROF_ADDR", "6060"}},
-		{name: "invalid METRICS_ADDR", env: map[string]string{"METRICS_ADDR": "9090"}, wantErr: []string{"METRICS_ADDR", "9090"}},
+		{name: "invalid OPS_ADDR", env: map[string]string{"OPS_ADDR": "9090"}, wantErr: []string{"OPS_ADDR", "9090"}},
 		{name: "non-numerical RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "abc"}, wantErr: []string{"RATE_LIMIT_RPS", "abc"}},
 		{name: "negative RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "-1"}, wantErr: []string{"RATE_LIMIT_RPS", "-1"}},
+		{name: "NaN RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "NaN"}, wantErr: []string{"RATE_LIMIT_RPS", "NaN"}},
+		{name: "Inf RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "Inf"}, wantErr: []string{"RATE_LIMIT_RPS", "Inf"}},
+		{name: "-Inf RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "-Inf"}, wantErr: []string{"RATE_LIMIT_RPS", "-Inf"}},
 		{name: "non-numerical RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "abc"}, wantErr: []string{"RATE_LIMIT_BURST", "abc"}},
 		{name: "fractional RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "1.5"}, wantErr: []string{"RATE_LIMIT_BURST", "1.5"}},
 		{name: "zero RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "0"}, wantErr: []string{"RATE_LIMIT_BURST", "0"}},
@@ -199,13 +204,13 @@ func TestCheckListenAddr(t *testing.T) {
 		value   string
 		wantErr bool
 	}{
-		{name: "empty value", value: ""},
 		{name: "port only", value: ":6060"},
 		{name: "hostname and port", value: "localhost:6060"},
 		{name: "IPv4 and port", value: "127.0.0.1:6060"},
 		{name: "IPv6 and port", value: "[::1]:6060"},
 		{name: "max port", value: "0.0.0.0:65535"},
 
+		{name: "empty value", value: "", wantErr: true},
 		{name: "missing colon", value: "6060", wantErr: true},
 		{name: "missing port", value: "localhost", wantErr: true},
 		{name: "empty port", value: "localhost:", wantErr: true},

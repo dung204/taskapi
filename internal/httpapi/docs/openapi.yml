@@ -20,34 +20,6 @@ tags:
     description: Task CRUD
 
 paths:
-  /healthz:
-    get:
-      tags: [health]
-      operationId: checkHealth
-      summary: Check the server and its store
-      description: With a database-backed store, the database is pinged as well.
-      responses:
-        "200":
-          description: Server and store are healthy
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Health"
-              example:
-                status: ok
-                store: ok
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
-        "503":
-          description: The store cannot be reached
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Health"
-              example:
-                status: unavailable
-                store: unavailable
-
   /tasks:
     get:
       tags: [tasks]
@@ -321,17 +293,6 @@ components:
           format: date-time
           description: RFC 3339.
           x-go-type: string
-
-    Health:
-      type: object
-      required: [status, store]
-      properties:
-        status:
-          type: string
-          enum: [ok, unavailable]
-        store:
-          type: string
-          enum: [ok, unavailable]
 
     Error:
       type: object

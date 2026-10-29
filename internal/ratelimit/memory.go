@@ -24,11 +24,14 @@ type MemoryLimiter struct {
 }
 
 func NewMemoryLimiter(limit rate.Limit, burst int) *MemoryLimiter {
+	refill := time.Duration(float64(burst) / float64(limit) * float64(time.Second))
+	ttl := max(5*time.Minute, refill)
+
 	return &MemoryLimiter{
 		clients: make(map[string]*client),
 		limit:   limit,
 		burst:   burst,
-		ttl:     5 * time.Minute,
+		ttl:     ttl,
 		now:     time.Now,
 	}
 }

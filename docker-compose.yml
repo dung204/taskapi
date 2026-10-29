@@ -42,7 +42,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-taskapi}:${POSTGRES_PASSWORD:-taskapi}@db:5432/${POSTGRES_DB:-taskapi}?sslmode=disable
       LOG_FORMAT: json
       PPROF_ADDR: ":6060"
-      METRICS_ADDR: ":9091"
+      OPS_ADDR: ":9091"
     ports:
       - "8080:8080"
       - "127.0.0.1:6060:6060"
@@ -52,6 +52,12 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/server", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   prometheus:
     image: prom/prometheus:v3.13.5
@@ -84,7 +90,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/healthz || exit 1"]
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/api/health"]
       interval: 5s
       timeout: 3s
       retries: 10

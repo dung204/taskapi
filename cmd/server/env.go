@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -22,7 +23,7 @@ type config struct {
 	workerEnabled  bool
 	workerInterval time.Duration
 	pprofAddr      string
-	metricsAddr    string
+	opsAddr        string
 	rateLimitRPS   float64
 	rateLimitBurst int
 }
@@ -46,10 +47,6 @@ func isValidPort(port string) (parsedPort int, ok bool) {
 }
 
 func checkListenAddr(name, value string) error {
-	if value == "" {
-		return nil
-	}
-
 	_, port, err := net.SplitHostPort(value)
 	if err != nil {
 		return fmt.Errorf(`%s must look like ":6060" or "localhost:6060", got %q`, name, value)
@@ -146,14 +143,16 @@ func loadConfig(lookup lookupFunc) (config, error) {
 	}
 
 	pprofAddr := getenv(lookup, "PPROF_ADDR", "")
-	errs = append(errs, checkListenAddr("PPROF_ADDR", pprofAddr))
+	if pprofAddr != "" {
+		errs = append(errs, checkListenAddr("PPROF_ADDR", pprofAddr))
+	}
 
-	metricsAddr := getenv(lookup, "METRICS_ADDR", "")
-	errs = append(errs, checkListenAddr("METRICS_ADDR", metricsAddr))
+	opsAddr := getenv(lookup, "OPS_ADDR", "127.0.0.1:9091")
+	errs = append(errs, checkListenAddr("OPS_ADDR", opsAddr))
 
 	rawRateLimitRPS := getenv(lookup, "RATE_LIMIT_RPS", "10")
 	rateLimitRPS, err := strconv.ParseFloat(rawRateLimitRPS, 64)
-	if err != nil || rateLimitRPS < 0 {
+	if err != nil || rateLimitRPS < 0 || math.IsNaN(rateLimitRPS) || math.IsInf(rateLimitRPS, 0) {
 		errs = append(errs, fmt.Errorf(`RATE_LIMIT_RPS must be a positive float number like 0.5, 1 or set to 0 to disable rate limiting, got %q`, rawRateLimitRPS))
 	}
 
@@ -177,7 +176,7 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		workerEnabled:  workerEnabled,
 		workerInterval: workerInterval,
 		pprofAddr:      pprofAddr,
-		metricsAddr:    metricsAddr,
+		opsAddr:        opsAddr,
 		rateLimitRPS:   rateLimitRPS,
 		rateLimitBurst: rateLimitBurst,
 	}, errors.Join(errs...)

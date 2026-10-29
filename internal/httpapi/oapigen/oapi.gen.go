@@ -19,42 +19,6 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
-// Defines values for HealthStatus.
-const (
-	HealthStatusOk          HealthStatus = "ok"
-	HealthStatusUnavailable HealthStatus = "unavailable"
-)
-
-// Valid indicates whether the value is a known member of the HealthStatus enum.
-func (e HealthStatus) Valid() bool {
-	switch e {
-	case HealthStatusOk:
-		return true
-	case HealthStatusUnavailable:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for HealthStore.
-const (
-	HealthStoreOk          HealthStore = "ok"
-	HealthStoreUnavailable HealthStore = "unavailable"
-)
-
-// Valid indicates whether the value is a known member of the HealthStore enum.
-func (e HealthStore) Valid() bool {
-	switch e {
-	case HealthStoreOk:
-		return true
-	case HealthStoreUnavailable:
-		return true
-	default:
-		return false
-	}
-}
-
 // CreateTaskRequest defines model for CreateTaskRequest.
 type CreateTaskRequest struct {
 	// Description Optional, defaults to an empty string.
@@ -76,18 +40,6 @@ type Error struct {
 	// Error Human-readable message.
 	Error string `json:"error"`
 }
-
-// Health defines model for Health.
-type Health struct {
-	Status HealthStatus `json:"status"`
-	Store  HealthStore  `json:"store"`
-}
-
-// HealthStatus defines model for Health.Status.
-type HealthStatus string
-
-// HealthStore defines model for Health.Store.
-type HealthStore string
 
 // Status `overdue` is set only by the server (a background worker, for tasks past
 // their `due_at` that are not `done`). Clients can filter by it but cannot
@@ -186,9 +138,6 @@ type UpdateTaskJSONRequestBody = UpdateTaskRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// CheckHealth Check the server and its store
-	// (GET /healthz)
-	CheckHealth(w http.ResponseWriter, r *http.Request)
 	// ListTasks List tasks
 	// (GET /tasks)
 	ListTasks(w http.ResponseWriter, r *http.Request, params ListTasksParams)
@@ -209,12 +158,6 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
-
-// CheckHealth Check the server and its store
-// (GET /healthz)
-func (_ Unimplemented) CheckHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
 
 // ListTasks List tasks
 // (GET /tasks)
@@ -254,20 +197,6 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
-
-// CheckHealth operation middleware
-func (siw *ServerInterfaceWrapper) CheckHealth(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CheckHealth(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
 
 // ListTasks operation middleware
 func (siw *ServerInterfaceWrapper) ListTasks(w http.ResponseWriter, r *http.Request) {
@@ -534,9 +463,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	}
 
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/healthz", wrapper.CheckHealth)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/tasks", wrapper.ListTasks)
 	})
 	r.Group(func(r chi.Router) {
@@ -570,56 +496,6 @@ type TooManyRequestsJSONResponse struct {
 	Body Error
 
 	Headers TooManyRequestsResponseHeaders
-}
-
-type CheckHealthRequestObject struct {
-}
-
-type CheckHealthResponseObject interface {
-	VisitCheckHealthResponse(w http.ResponseWriter) error
-}
-
-type CheckHealth200JSONResponse Health
-
-func (response CheckHealth200JSONResponse) VisitCheckHealthResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CheckHealth429JSONResponse struct{ TooManyRequestsJSONResponse }
-
-func (response CheckHealth429JSONResponse) VisitCheckHealthResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
-	w.WriteHeader(429)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CheckHealth503JSONResponse Health
-
-func (response CheckHealth503JSONResponse) VisitCheckHealthResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(503)
-	_, err := buf.WriteTo(w)
-	return err
 }
 
 type ListTasksRequestObject struct {
@@ -1056,9 +932,6 @@ func (response UpdateTask503JSONResponse) VisitUpdateTaskResponse(w http.Respons
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
-	// CheckHealth Check the server and its store
-	// (GET /healthz)
-	CheckHealth(ctx context.Context, request CheckHealthRequestObject) (CheckHealthResponseObject, error)
 	// ListTasks List tasks
 	// (GET /tasks)
 	ListTasks(ctx context.Context, request ListTasksRequestObject) (ListTasksResponseObject, error)
@@ -1113,30 +986,6 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
-}
-
-// CheckHealth operation middleware
-func (sh *strictHandler) CheckHealth(w http.ResponseWriter, r *http.Request) {
-	var request CheckHealthRequestObject
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.CheckHealth(ctx, request.(CheckHealthRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "CheckHealth")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(CheckHealthResponseObject); ok {
-		if err := validResponse.VisitCheckHealthResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
 }
 
 // ListTasks operation middleware
