@@ -48,7 +48,7 @@ Stop it with `Ctrl+C` or `SIGTERM`. The server shuts down gracefully and stops t
 | `9091` | Ops        | `OPS_ADDR` (default `127.0.0.1:9091`)  | not published                    | `GET /healthz`, `GET /metrics` (scraped by Prometheus)         |
 | `6060` | pprof      | `PPROF_ADDR` (unset = disabled)        | `127.0.0.1:6060`                 | `/debug/pprof/`                                                |
 | `5432` | PostgreSQL | `POSTGRES_*` in `.env`                 | `127.0.0.1:5432`                 | Database (`db` service)                                        |
-| `9090` | Prometheus | `prometheus.yml`                       | `127.0.0.1:9090`                 | Prometheus UI                                                  |
+| `9090` | Prometheus | `docker-compose.yml`                       | `127.0.0.1:9090`                 | Prometheus UI                                                  |
 | `3000` | Grafana    | `GRAFANA_ADMIN_PASSWORD` in `.env`     | `127.0.0.1:3000`                 | Grafana dashboards                                             |
 
 The ops and pprof servers listen on their own ports, separate from the API port. Only the API port is meant to be reachable from outside. Outside docker compose, the API, ops and pprof ports are the ones the server itself opens.
@@ -79,6 +79,14 @@ Example:
 PORT=3000 LOG_FORMAT=json go run ./cmd/server
 ```
 
+### Why `OPS_ADDR` differs in docker compose
+
+The ops server exposes metrics and health details with no authentication, so by default it binds to loopback only (`127.0.0.1:9091`) and is reachable just from the machine the server runs on.
+
+Inside a container, `127.0.0.1` is the container's own loopback, so Prometheus (a different container) could not scrape `api:9091`. `docker-compose.yml` therefore sets `OPS_ADDR=:9091` to listen on every interface of the container. This stays private because the compose file does not publish port 9091 to the host: only containers on the compose network can reach it. The `/server healthcheck` subcommand runs inside the container and treats an address without a host as `127.0.0.1`, so it works with both values.
+
+If you set `OPS_ADDR` to a non-loopback address outside docker, put it behind a firewall or private network.
+
 ### PostgreSQL
 
 The schema lives in `migrations/` as goose migrations. Apply them with `make migrate-up` (it needs `DATABASE_URL`; `make migrate-down`, `migrate-status` and `migrate-create name=...` are also available), then start the server with the postgres store:
@@ -95,17 +103,7 @@ When `STORE=postgres`, `/healthz` (on the ops server) also pings the database.
 
 ## API
 
-| Method   | Path          | Description                                                  |
-| -------- | ------------- | ------------------------------------------------------------ |
-| `POST`   | `/tasks`      | Create a task. Returns `201` with the task.                  |
-| `GET`    | `/tasks`      | List tasks, newest first. Returns `[]` when there are none.  |
-| `GET`    | `/tasks/{id}` | Get one task. Returns `404` if it does not exist.            |
-| `PATCH`  | `/tasks/{id}` | Update some fields of a task. Returns the updated task.      |
-| `DELETE` | `/tasks/{id}` | Delete a task. Returns `204`.                                |
-| `GET`    | `/openapi.yaml` | The OpenAPI spec.                                          |
-| `GET`    | `/docs/`      | Swagger UI for the API.                                      |
-
-Any other method on a registered path returns `405 Method Not Allowed`. Errors are returned as `{"error": "message"}`: `400` for invalid input (including a malformed body or bad query parameter), `404` for an unknown task, `429` when the client is rate limited, `503` when the store is unavailable or times out, and `500` for anything else.
+The API is documented by its OpenAPI spec. While the server is running, see the Swagger UI at http://localhost:8080/docs/ for every endpoint, schema, status code and example, or fetch the raw spec from http://localhost:8080/openapi.yaml. Both are on the API port and are not rate limited.
 
 ### Ops server
 
@@ -122,79 +120,43 @@ The server binary also has a `healthcheck` subcommand (`/server healthcheck`) th
 
 Each client IP gets a token bucket of `RATE_LIMIT_BURST` requests, refilled at `RATE_LIMIT_RPS` per second (IPv6 addresses are grouped by their /64). A client over the limit gets `429` with a `Retry-After` header. `/docs/` and `/openapi.yaml` are not limited. The limiter lives in process memory, so limits are not shared between instances or kept across restarts. Clients are keyed by the connection's address only, so behind a proxy or a Docker network all clients share one bucket (`X-Forwarded-For` is ignored).
 
+### Request IDs
+
 Every response carries an `X-Request-ID` header. Send your own (letters, digits and `-`, up to 64 characters) to have it reused, otherwise one is generated.
-
-### Task
-
-```json
-{
-  "id": "01a142e5-6a3e-7218-9722-c0215445fae0",
-  "title": "Write the README",
-  "description": "",
-  "status": "todo",
-  "due_at": "2030-01-01T00:00:00Z",
-  "created_at": "2026-10-01T00:00:00Z",
-  "updated_at": "2026-10-01T00:00:00Z"
-}
-```
-
-| Field         | Rules                                                                                  |
-| ------------- | -------------------------------------------------------------------------------------- |
-| `title`       | Required. Surrounding whitespace is trimmed, then it must be 1-200 characters.         |
-| `description` | Optional, at most 2000 characters. Defaults to `""`.                                   |
-| `status`      | `todo` (default), `doing` or `done`. `overdue` is set by the worker and can not be sent. |
-| `due_at`      | Optional RFC 3339 date-time, for example `2030-01-01T00:00:00Z` or `2030-01-01T10:00:00+07:00`. Stored and returned in UTC. |
-
-`id` is a UUIDv7, which is why listing by `id` descending gives newest first. Timestamps are stored with microsecond precision.
-
-### Updating
-
-`PATCH /tasks/{id}` only changes the fields present in the body. A patch is applied all or nothing: if any field is invalid, nothing is changed. `updated_at` only moves when a field actually changes, so sending the current values back is a no-op.
-
-```sh
-curl -X PATCH http://localhost:8080/tasks/$ID \
-  -H 'Content-Type: application/json' \
-  -d '{"status":"doing"}'
-```
-
-### Listing
-
-`GET /tasks` accepts these query parameters:
-
-| Parameter | Default | Description                                                    |
-| --------- | ------- | -------------------------------------------------------------- |
-| `limit`   | `20`    | Page size, at least 1. Values above 100 are capped at 100.     |
-| `offset`  | `0`     | Number of tasks to skip                                        |
-| `status`  | (all)   | Only tasks with this status: `todo`, `doing`, `done` or `overdue` |
 
 ### Overdue tasks
 
 While the worker runs, each scan sets the status of every task to `overdue` when its `due_at` has passed, unless the task is already `done` or `overdue`. Tasks without a `due_at` are never marked.
 
-`requests.http` contains ready-to-run requests for the VS Code REST Client and JetBrains HTTP Client.
-
 ## Development
 
+Everything goes through the `Makefile` (`make help` lists every target). `make` reads `.env` if present.
+
 ```sh
-go build -buildvcs=false ./...   # build
-go vet ./...
-go test ./...
-go test -race ./...
-go generate ./...                # regenerate oapigen after editing internal/httpapi/docs/openapi.yml
-make gen-sql                     # regenerate the sqlc code after editing the SQL queries
+make run             # run the server
+make build           # build the server into bin/server
+make test            # go test -race -shuffle=on ./...
+make vet             # go vet
+make lint            # golangci-lint (downloaded into bin/ on first use)
+make fmt             # format the code
+make gen             # go generate: regenerate oapigen after editing internal/httpapi/docs/openapi.yml
+make gen-sql         # regenerate the sqlc code after editing the SQL queries
+make tidy            # go mod tidy
+make cover           # tests with coverage, writes coverage.out (make cover-html for a report)
+make hooks           # install the lefthook git hooks (lint on pre-commit, tests on pre-push)
+make ci              # everything CI runs (needs TEST_DATABASE_URL)
 ```
 
-The `Makefile` wraps these and more (`make help` lists every target). `make ci` runs what CI runs: format check, vet, lint, tests including Postgres, generated-code and `go mod tidy` checks, and a coverage threshold (it needs `TEST_DATABASE_URL`). `make hooks` installs the lefthook git hooks (lint on pre-commit, tests on pre-push).
+Migrations: `make migrate-up`, `migrate-down`, `migrate-status` and `migrate-create name=add_index` (they need `DATABASE_URL`). `make lint-sql` lints them with squawk (`make tools` installs the binary tools).
 
-`-buildvcs=false` avoids a VCS-stamping error from `go build` in some environments.
+If `go build` fails with a VCS-stamping error in your environment, build with `go build -buildvcs=false ./...`.
 
 ### Tests
 
 The unit and handler tests run without any setup. The PostgreSQL store tests are skipped unless `TEST_DATABASE_URL` is set:
 
 ```sh
-TEST_DATABASE_URL='postgres://user:password@localhost:5432/test_tasks?sslmode=disable' \
-go test -race ./internal/store/postgres/
+TEST_DATABASE_URL='postgres://user:password@localhost:5432/test_tasks?sslmode=disable' make test-db
 ```
 
 The `tasks` table must already exist in that database, and **every test truncates it**, so use a dedicated database.
@@ -204,22 +166,24 @@ The memory and PostgreSQL stores share one behaviour suite, `tasktest.TestStore`
 ## Project layout
 
 ```
-cmd/server/            entry point: config, logger, database connection, ops and pprof servers, graceful shutdown
-internal/httpapi/      chi router, handlers, error mapping, middlewares (request ID, metrics, logging, panic recovery, rate limiting)
-  docs/                OpenAPI spec (openapi.yml) and Swagger UI
-  oapigen/             code generated from the spec by oapi-codegen, plus API <-> domain converters
-internal/task/         task model, validation and the Store interface
-  tasktest/            shared test helpers and the store behaviour suite
-internal/store/
-  memory/              in-memory store
-  postgres/            PostgreSQL store (sqlc-generated queries, pool metrics)
-internal/ratelimit/    in-memory per-key token bucket limiter
-internal/worker/       background worker that marks overdue tasks
-internal/logtest/      in-memory slog handler for asserting on log records
-migrations/            goose SQL migrations for the PostgreSQL schema
-grafana/               provisioned Grafana datasource and dashboards
-scripts/               load test and rate limit demo scripts
-Dockerfile             `server` and `migrate` images
-docker-compose.yml     db, migrate, api, prometheus and grafana
-prometheus.yml         Prometheus scrape config
+.
+├── cmd/server/            entry point: config, logger, database connection, ops and pprof servers, graceful shutdown
+├── internal/
+│   ├── httpapi/           chi router, handlers, error mapping, middlewares (request ID, metrics, logging, panic recovery, rate limiting)
+│   │   ├── docs/          OpenAPI spec (openapi.yml) and Swagger UI
+│   │   └── oapigen/       code generated from the spec by oapi-codegen, plus API <-> domain converters
+│   ├── task/              task model, validation and the Store interface
+│   │   └── tasktest/      shared test helpers and the store behaviour suite
+│   ├── store/
+│   │   ├── memory/        in-memory store
+│   │   └── postgres/      PostgreSQL store (sqlc-generated queries, pool metrics)
+│   ├── ratelimit/         in-memory per-key token bucket limiter
+│   ├── worker/            background worker that marks overdue tasks
+│   └── logtest/           in-memory slog handler for asserting on log records
+├── migrations/            goose SQL migrations for the PostgreSQL schema
+├── grafana/               provisioned Grafana datasource and dashboards
+├── scripts/               load test and rate limit demo scripts
+├── Dockerfile             `server` and `migrate` images
+├── docker-compose.yml     db, migrate, api, prometheus and grafana
+└── prometheus.yml         Prometheus scrape config
 ```
