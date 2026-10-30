@@ -26,9 +26,9 @@ func corsMiddleware(opts CORSMiddlewareOpts) middleware {
 			origin := r.Header.Get("Origin")
 			allowed := origin != "" && (anyOrigin || slices.Contains(opts.AllowedOrigins, origin))
 
-			if origin != "" {
-				w.Header().Add("Vary", "Origin")
-			}
+			// The response depends on Origin, so caches must key on it for every
+			// request, including ones without an Origin header.
+			w.Header().Add("Vary", "Origin")
 
 			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)

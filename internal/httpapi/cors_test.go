@@ -74,7 +74,7 @@ func TestCorsMiddleware(t *testing.T) {
 				return preflightRequest(tb, "https://evil.example.org")
 			},
 			wantStatus:  http.StatusNoContent,
-			wantHeaders: map[string]string{"Access-Control-Allow-Origin": "", "Access-Control-Allow-Methods": "", "Access-Control-Max-Age": ""},
+			wantHeaders: map[string]string{"Access-Control-Allow-Origin": "", "Access-Control-Allow-Methods": "", "Access-Control-Max-Age": "", "Vary": "Origin"},
 		},
 		{
 			name: "origin match is exact",
@@ -133,7 +133,7 @@ func TestCorsMiddleware(t *testing.T) {
 			},
 			wantStatus:    http.StatusTeapot,
 			wantReachNext: true,
-			wantHeaders:   map[string]string{"Access-Control-Allow-Origin": "", "Access-Control-Expose-Headers": ""},
+			wantHeaders:   map[string]string{"Access-Control-Allow-Origin": "", "Access-Control-Expose-Headers": "", "Vary": "Origin"},
 		},
 		{
 			name: "actual request without Origin gets no CORS headers",
@@ -144,7 +144,7 @@ func TestCorsMiddleware(t *testing.T) {
 			},
 			wantStatus:    http.StatusTeapot,
 			wantReachNext: true,
-			wantHeaders:   map[string]string{"Access-Control-Allow-Origin": "", "Access-Control-Expose-Headers": "", "Vary": ""},
+			wantHeaders:   map[string]string{"Access-Control-Allow-Origin": "", "Access-Control-Expose-Headers": "", "Vary": "Origin"},
 		},
 		{
 			name: "actual request from an allowed origin gets Allow-Origin",
