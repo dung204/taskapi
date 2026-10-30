@@ -29,6 +29,7 @@ func NewHandler(
 	logger *slog.Logger,
 	metrics *Metrics,
 	limiter Limiter,
+	corsOpts CORSMiddlewareOpts,
 ) http.Handler {
 	srv := &server{
 		taskHandler: newTaskHandler(store, logger),
@@ -36,7 +37,11 @@ func NewHandler(
 
 	r := chi.NewRouter()
 
-	mws := []middleware{requestIDMiddleware}
+	mws := make([]middleware, 0)
+	if len(corsOpts.AllowedOrigins) > 0 {
+		mws = append(mws, corsMiddleware(corsOpts))
+	}
+	mws = append(mws, requestIDMiddleware)
 	if metrics != nil {
 		mws = append(mws, metrics.Middleware)
 	}

@@ -43,6 +43,7 @@ services:
       LOG_FORMAT: json
       PPROF_ADDR: ":6060"
       OPS_ADDR: ":9091"
+      CORS_ALLOWED_ORIGINS: "*" # replace this to the frontend origin if available
     ports:
       - "8080:8080"
       - "127.0.0.1:6060:6060"

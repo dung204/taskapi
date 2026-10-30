@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,8 @@ type config struct {
 	opsAddr        string
 	rateLimitRPS   float64
 	rateLimitBurst int
+	corsOrigins    []string
+	corsMaxAge     time.Duration
 }
 
 type lookupFunc = func(string) string
@@ -57,6 +60,64 @@ func checkListenAddr(name, value string) error {
 	}
 
 	return nil
+}
+
+// parseCORSOrigins splits a comma-separated origin list. "*" must be the whole
+// value, every other entry must be a bare scheme://host[:port] origin. Origins
+// are normalized the way browsers send them (lowercase, no default port) and
+// duplicates are dropped.
+func parseCORSOrigins(raw string) ([]string, error) {
+	if raw == "*" {
+		return []string{"*"}, nil
+	}
+
+	if strings.Contains(raw, "*") {
+		return nil, fmt.Errorf(`CORS_ALLOWED_ORIGINS "*" must be the only value and can not be part of an origin, got %q`, raw)
+	}
+
+	var origins []string
+
+	for entry := range strings.SplitSeq(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		u, err := url.Parse(entry)
+		if err != nil ||
+			(u.Scheme != "http" && u.Scheme != "https") ||
+			u.Host == "" || u.Hostname() == "" ||
+			u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" ||
+			strings.HasSuffix(entry, "?") || strings.HasSuffix(entry, "#") {
+			return nil, fmt.Errorf(`CORS_ALLOWED_ORIGINS entries must look like "https://app.example.com" or "http://localhost:5173" (no path or trailing slash), got %q`, entry)
+		}
+
+		if port := u.Port(); port != "" {
+			if _, ok := isValidPort(port); !ok {
+				return nil, fmt.Errorf(`CORS_ALLOWED_ORIGINS has an invalid port, got %q`, entry)
+			}
+		}
+
+		origin := normalizeOrigin(u)
+		if !slices.Contains(origins, origin) {
+			origins = append(origins, origin)
+		}
+	}
+
+	return origins, nil
+}
+
+// normalizeOrigin returns u as a browser would send it in the Origin header:
+// lowercase scheme and host, and without the port when it is the scheme's default.
+func normalizeOrigin(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Host)
+
+	if port := u.Port(); (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		host = strings.TrimSuffix(host, ":"+port)
+	}
+
+	return scheme + "://" + host
 }
 
 var errDatabaseURL = errors.New("DATABASE_URL must look like postgres://user:password@host:5432/dbname")
@@ -165,6 +226,20 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		}
 	}
 
+	corsOrigins, err := parseCORSOrigins(getenv(lookup, "CORS_ALLOWED_ORIGINS", ""))
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	corsMaxAge := 10 * time.Minute
+	if len(corsOrigins) > 0 {
+		rawCORSMaxAge := getenv(lookup, "CORS_MAX_AGE", "10m")
+		corsMaxAge, err = time.ParseDuration(rawCORSMaxAge)
+		if err != nil || corsMaxAge < 0 || corsMaxAge%time.Second != 0 {
+			errs = append(errs, fmt.Errorf(`CORS_MAX_AGE must be a non-negative duration in whole seconds like "30s", "10m" or "1h", got %q`, rawCORSMaxAge))
+		}
+	}
+
 	return config{
 		port:           port,
 		store:          store,
@@ -179,5 +254,7 @@ func loadConfig(lookup lookupFunc) (config, error) {
 		opsAddr:        opsAddr,
 		rateLimitRPS:   rateLimitRPS,
 		rateLimitBurst: rateLimitBurst,
+		corsOrigins:    corsOrigins,
+		corsMaxAge:     corsMaxAge,
 	}, errors.Join(errs...)
 }

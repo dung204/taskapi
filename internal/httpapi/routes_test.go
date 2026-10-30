@@ -38,7 +38,13 @@ func (f *fakeLimiter) Allow(key string) (bool, time.Duration) {
 func setupTestWithLimiter(t *testing.T, store task.Store, l Limiter) http.Handler {
 	t.Helper()
 	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-	return NewHandler(store, logger, nil, l)
+	return NewHandler(store, logger, nil, l, CORSMiddlewareOpts{})
+}
+
+func setupTestWithCORS(t *testing.T, store task.Store, l Limiter, opts CORSMiddlewareOpts) http.Handler {
+	t.Helper()
+	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
+	return NewHandler(store, logger, nil, l, opts)
 }
 
 func TestHandler(t *testing.T) {
@@ -163,7 +169,7 @@ func TestHandler(t *testing.T) {
 	t.Run("rate limited request keeps its route in the metrics", func(t *testing.T) {
 		reg := prometheus.NewRegistry()
 		logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-		h := NewHandler(memory.NewTaskStore(), logger, NewMetrics(reg), &fakeLimiter{ok: false})
+		h := NewHandler(memory.NewTaskStore(), logger, NewMetrics(reg), &fakeLimiter{ok: false}, CORSMiddlewareOpts{})
 
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks/018f0000-0000-7000-8000-000000000000", nil)
 		h.ServeHTTP(rec, req)
@@ -230,6 +236,95 @@ func TestHandler(t *testing.T) {
 
 		if len(l.keys) != 0 {
 			t.Errorf("limiter was called with %q, want no call", l.keys)
+		}
+	})
+
+	t.Run("CORS preflight is answered before the router and the rate limiter", func(t *testing.T) {
+		const origin = "https://app.example.com"
+		l := &fakeLimiter{ok: false}
+		h := setupTestWithCORS(t, memory.NewTaskStore(), l, CORSMiddlewareOpts{AllowedOrigins: []string{origin}, MaxAge: time.Minute})
+		rec, req := prepareTestRequest(t, http.MethodOptions, "/tasks", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status code = %d, want %d", rec.Code, http.StatusNoContent)
+		}
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+			t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+		}
+
+		if got := rec.Header().Get("Access-Control-Max-Age"); got != "60" {
+			t.Errorf("Access-Control-Max-Age = %q, want %q", got, "60")
+		}
+
+		if len(l.keys) != 0 {
+			t.Errorf("limiter was called with %q, want no call", l.keys)
+		}
+	})
+
+	t.Run("CORS headers on a regular response", func(t *testing.T) {
+		const origin = "https://app.example.com"
+		h := setupTestWithCORS(t, memory.NewTaskStore(), nil, CORSMiddlewareOpts{AllowedOrigins: []string{origin}})
+		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
+		req.Header.Set("Origin", origin)
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+		}
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+			t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+		}
+
+		if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-Request-ID") {
+			t.Errorf("Access-Control-Expose-Headers = %q, want it to contain X-Request-ID", got)
+		}
+
+		if rec.Header().Get("X-Request-ID") == "" {
+			t.Error("X-Request-ID header is missing")
+		}
+	})
+
+	t.Run("CORS headers on a rate limited response", func(t *testing.T) {
+		// Without them a browser would hide the 429 and its Retry-After from the page.
+		const origin = "https://app.example.com"
+		l := &fakeLimiter{ok: false, retryAfter: time.Second}
+		h := setupTestWithCORS(t, memory.NewTaskStore(), l, CORSMiddlewareOpts{AllowedOrigins: []string{origin}})
+		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
+		req.Header.Set("Origin", origin)
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status code = %d, want %d", rec.Code, http.StatusTooManyRequests)
+		}
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+			t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+		}
+	})
+
+	t.Run("CORS is not wired without allowed origins", func(t *testing.T) {
+		h := setupTestWithCORS(t, memory.NewTaskStore(), nil, CORSMiddlewareOpts{})
+
+		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
+		req.Header.Set("Origin", "https://app.example.com")
+		h.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("Access-Control-Allow-Origin = %q, want it unset", got)
+		}
+
+		rec, req = prepareTestRequest(t, http.MethodOptions, "/tasks", nil)
+		req.Header.Set("Origin", "https://app.example.com")
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("preflight status code = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 		}
 	})
 }

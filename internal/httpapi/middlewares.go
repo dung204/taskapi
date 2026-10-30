@@ -41,6 +41,8 @@ func (h requestIDContextHandler) WithGroup(name string) slog.Handler {
 
 var requestIDRegexp = regexp.MustCompile("^[A-Za-z0-9-]{1,64}$")
 
+var _ middleware = requestIDMiddleware
+
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(requestIDHeaderKey)

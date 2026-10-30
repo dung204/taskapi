@@ -70,6 +70,8 @@ Settings come from environment variables (see `.env.example`). An empty value co
 | `PPROF_ADDR`      | (none)   | Listen address of the pprof server, such as `127.0.0.1:6060`. Unset means no pprof server |
 | `RATE_LIMIT_RPS`  | `10`     | Requests per second allowed for each client (float such as `0.5`). `0` disables rate limiting |
 | `RATE_LIMIT_BURST` | `20`    | Bucket size for each client, an integer of at least 1. Only checked when rate limiting is on |
+| `CORS_ALLOWED_ORIGINS` | (none) | Origins allowed to call the API from a browser, comma-separated, such as `https://app.example.com,http://localhost:5173`. `*` allows any origin. Empty disables CORS |
+| `CORS_MAX_AGE`    | `10m`    | How long browsers may cache a CORS preflight, a non-negative duration in whole seconds. Only checked when `CORS_ALLOWED_ORIGINS` is set. `0` omits the header |
 | `GRAFANA_ADMIN_PASSWORD` | (none) | Grafana admin password. Only used by `docker-compose.yml`, never by the server |
 | `TEST_DATABASE_URL` | (none) | Postgres connection string for the store tests. Not read by the server      |
 
@@ -119,6 +121,16 @@ The server binary also has a `healthcheck` subcommand (`/server healthcheck`) th
 ### Rate limiting
 
 Each client IP gets a token bucket of `RATE_LIMIT_BURST` requests, refilled at `RATE_LIMIT_RPS` per second (IPv6 addresses are grouped by their /64). A client over the limit gets `429` with a `Retry-After` header. `/docs/` and `/openapi.yaml` are not limited. The limiter lives in process memory, so limits are not shared between instances or kept across restarts. Clients are keyed by the connection's address only, so behind a proxy or a Docker network all clients share one bucket (`X-Forwarded-For` is ignored).
+
+### CORS
+
+CORS is off unless `CORS_ALLOWED_ORIGINS` is set, so browsers only allow same-origin requests. When it is set:
+
+- Each entry must be a bare `scheme://host[:port]` origin (`http` or `https`), with no path, trailing slash, query or credentials. Entries are lowercased, a default port (`:80` on http, `:443` on https) is dropped because browsers never send it, and duplicates are removed.
+- `*` allows any origin, but it must be the whole value: it can not be combined with other origins or used for subdomains such as `https://*.example.com`.
+- A preflight (`OPTIONS` with `Origin` and `Access-Control-Request-Method`) from an allowed origin gets `204` with `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods` (`GET, POST, PATCH, DELETE`), `Access-Control-Allow-Headers` (`Content-Type, X-Request-ID, Authorization`) and, unless `CORS_MAX_AGE=0`, `Access-Control-Max-Age`. From any other origin it still gets `204` but without these headers, so the browser blocks the request.
+- Other requests from an allowed origin get `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` (`X-Request-ID, Retry-After`), so a page can read the request ID and the `Retry-After` of a `429`. The allowed origin is echoed back (also for `*`) with `Vary: Origin`. Credentials (cookies) are not allowed.
+- CORS runs before the request ID, metrics, logging and rate limiting middlewares, so preflights are answered without being logged, counted or limited. It also applies to `/docs/` and `/openapi.yaml`.
 
 ### Request IDs
 

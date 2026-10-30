@@ -21,7 +21,7 @@ func setupTestWithStore(t *testing.T, store task.Store) (http.Handler, *logtest.
 	t.Helper()
 	rec := logtest.NewRecorder()
 	logger := slog.New(NewRequestIDContextHandler(rec))
-	return NewHandler(store, logger, nil, nil), rec
+	return NewHandler(store, logger, nil, nil, CORSMiddlewareOpts{}), rec
 }
 
 func setupTest(t *testing.T) (h http.Handler, store task.Store, rec *logtest.Recorder) {
@@ -29,7 +29,7 @@ func setupTest(t *testing.T) (h http.Handler, store task.Store, rec *logtest.Rec
 	rec = logtest.NewRecorder()
 	logger := slog.New(NewRequestIDContextHandler(rec))
 	store = memory.NewTaskStore()
-	h = NewHandler(store, logger, nil, nil)
+	h = NewHandler(store, logger, nil, nil, CORSMiddlewareOpts{})
 	return h, store, rec
 }
 

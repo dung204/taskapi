@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,8 @@ func defaultConfig() config {
 		opsAddr:        "127.0.0.1:9091",
 		rateLimitRPS:   10,
 		rateLimitBurst: 20,
+		corsOrigins:    nil,
+		corsMaxAge:     10 * time.Minute,
 	}
 }
 
@@ -60,6 +63,16 @@ func TestLoadConfig(t *testing.T) {
 		{name: "valid OPS_ADDR", env: map[string]string{"OPS_ADDR": "localhost:9090"}, want: cfgWith(func(c *config) { c.opsAddr = "localhost:9090" })},
 		{name: "valid RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "0.5"}, want: cfgWith(func(c *config) { c.rateLimitRPS = 0.5 })},
 		{name: "valid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "5"}, want: cfgWith(func(c *config) { c.rateLimitBurst = 5 })},
+		{name: "valid CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com"} })},
+		{name: "multiple CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com, http://localhost:5173"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com", "http://localhost:5173"} })},
+		{name: "CORS_ALLOWED_ORIGINS ignores empty entries", env: map[string]string{"CORS_ALLOWED_ORIGINS": ",https://app.example.com,,"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com"} })},
+		{name: "CORS_ALLOWED_ORIGINS is lowercased", env: map[string]string{"CORS_ALLOWED_ORIGINS": "HTTPS://App.Example.COM:8443"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com:8443"} })},
+		{name: "CORS_ALLOWED_ORIGINS drops default ports", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com:443,http://localhost:80"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com", "http://localhost"} })},
+		{name: "CORS_ALLOWED_ORIGINS keeps non-default ports", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com:80,http://localhost:443"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com:80", "http://localhost:443"} })},
+		{name: "CORS_ALLOWED_ORIGINS drops duplicates", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com,HTTPS://APP.example.com:443"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"https://app.example.com"} })},
+		{name: "wildcard CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"*"} })},
+		{name: "valid CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "1h"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"*"}; c.corsMaxAge = time.Hour })},
+		{name: "zero CORS_MAX_AGE omits the header", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "0"}, want: cfgWith(func(c *config) { c.corsOrigins = []string{"*"}; c.corsMaxAge = 0 })},
 
 		{name: "invalid PORT", env: map[string]string{"PORT": "abc"}, wantErr: []string{"PORT", "abc"}},
 		{name: "invalid STORE", env: map[string]string{"STORE": "foo"}, wantErr: []string{"STORE", "foo"}},
@@ -77,6 +90,19 @@ func TestLoadConfig(t *testing.T) {
 		{name: "fractional RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "1.5"}, wantErr: []string{"RATE_LIMIT_BURST", "1.5"}},
 		{name: "zero RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "0"}, wantErr: []string{"RATE_LIMIT_BURST", "0"}},
 		{name: "negative RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "-5"}, wantErr: []string{"RATE_LIMIT_BURST", "-5"}},
+		{name: "CORS_ALLOWED_ORIGINS without scheme", env: map[string]string{"CORS_ALLOWED_ORIGINS": "app.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "app.example.com"}},
+		{name: "CORS_ALLOWED_ORIGINS with unsupported scheme", env: map[string]string{"CORS_ALLOWED_ORIGINS": "ftp://app.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "ftp://app.example.com"}},
+		{name: "CORS_ALLOWED_ORIGINS with trailing slash", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com/"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com/"}},
+		{name: "CORS_ALLOWED_ORIGINS with path", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com/app"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com/app"}},
+		{name: "CORS_ALLOWED_ORIGINS with query", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com?a=b"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com?a=b"}},
+		{name: "CORS_ALLOWED_ORIGINS with credentials", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://u:p@app.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://u:p@app.example.com"}},
+		{name: "CORS_ALLOWED_ORIGINS without host", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://"}},
+		{name: "CORS_ALLOWED_ORIGINS with invalid port", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com:99999"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "99999"}},
+		{name: "CORS_ALLOWED_ORIGINS wildcard mixed with origins", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*,https://app.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "*"}},
+		{name: "CORS_ALLOWED_ORIGINS wildcard subdomain", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://*.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://*.example.com"}},
+		{name: "non-duration CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "abc"}, wantErr: []string{"CORS_MAX_AGE", "abc"}},
+		{name: "negative CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "-1s"}, wantErr: []string{"CORS_MAX_AGE", "-1s"}},
+		{name: "sub-second CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "1500ms"}, wantErr: []string{"CORS_MAX_AGE", "1500ms"}},
 		{name: "multiple errors", env: map[string]string{"PORT": "abc", "STORE": "foo", "LOG_LEVEL": "loud"}, wantErr: []string{"PORT", "abc", "STORE", "foo", "LOG_LEVEL", "loud"}},
 
 		{
@@ -141,6 +167,12 @@ func TestLoadConfig(t *testing.T) {
 				c.rateLimitRPS = 0
 				c.rateLimitBurst = 0
 			}),
+		},
+
+		{
+			name: "CORS_MAX_AGE is not checked without CORS_ALLOWED_ORIGINS",
+			env:  map[string]string{"CORS_MAX_AGE": "abc"},
+			want: defaultConfig(),
 		},
 	}
 
@@ -241,6 +273,106 @@ func TestCheckListenAddr(t *testing.T) {
 				if !strings.Contains(err.Error(), s) {
 					t.Errorf("checkListenAddr(%q) error = %q, want it to contain %q", tt.value, err, s)
 				}
+			}
+		})
+	}
+}
+
+func TestParseCORSOrigins(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    []string
+		wantErr []string
+	}{
+		{name: "empty value", raw: "", want: nil},
+		{name: "only separators and spaces", raw: " , ,, ", want: nil},
+		{name: "single origin", raw: "https://app.example.com", want: []string{"https://app.example.com"}},
+		{name: "origin with port", raw: "http://localhost:5173", want: []string{"http://localhost:5173"}},
+		{name: "IPv6 origin", raw: "http://[::1]:5173", want: []string{"http://[::1]:5173"}},
+		{name: "multiple origins keep their order", raw: "https://b.example.com,http://localhost:5173,https://a.example.com", want: []string{"https://b.example.com", "http://localhost:5173", "https://a.example.com"}},
+		{name: "spaces and empty entries are ignored", raw: " https://a.example.com , ,https://b.example.com,", want: []string{"https://a.example.com", "https://b.example.com"}},
+		{name: "wildcard", raw: "*", want: []string{"*"}},
+		{name: "origins are normalized", raw: "HTTPS://App.Example.com:443", want: []string{"https://app.example.com"}},
+		{name: "duplicates after normalization are dropped", raw: "https://a.example.com,HTTPS://A.example.com:443,https://a.example.com", want: []string{"https://a.example.com"}},
+		{name: "same host with different schemes is kept", raw: "http://a.example.com,https://a.example.com", want: []string{"http://a.example.com", "https://a.example.com"}},
+
+		{name: "wildcard with other origins", raw: "*,https://app.example.com", wantErr: []string{"CORS_ALLOWED_ORIGINS", "*"}},
+		{name: "wildcard subdomain", raw: "https://*.example.com", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://*.example.com"}},
+		{name: "wildcard with a separator", raw: "*,", wantErr: []string{"CORS_ALLOWED_ORIGINS", "*"}},
+		{name: "missing scheme", raw: "app.example.com", wantErr: []string{"CORS_ALLOWED_ORIGINS", "app.example.com"}},
+		{name: "unsupported scheme", raw: "ftp://app.example.com", wantErr: []string{"CORS_ALLOWED_ORIGINS", "ftp://app.example.com"}},
+		{name: "missing host", raw: "https://", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://"}},
+		{name: "port without host", raw: "https://:8080", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://:8080"}},
+		{name: "trailing slash", raw: "https://app.example.com/", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com/"}},
+		{name: "path", raw: "https://app.example.com/app", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com/app"}},
+		{name: "query", raw: "https://app.example.com?a=b", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com?a=b"}},
+		{name: "empty query", raw: "https://app.example.com?", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com?"}},
+		{name: "fragment", raw: "https://app.example.com#top", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com#top"}},
+		{name: "empty fragment", raw: "https://app.example.com#", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://app.example.com#"}},
+		{name: "credentials", raw: "https://u:p@app.example.com", wantErr: []string{"CORS_ALLOWED_ORIGINS", "https://u:p@app.example.com"}},
+		{name: "port out of range", raw: "https://app.example.com:65536", wantErr: []string{"CORS_ALLOWED_ORIGINS", "port", "65536"}},
+		{name: "port zero", raw: "https://app.example.com:0", wantErr: []string{"CORS_ALLOWED_ORIGINS", "port", ":0"}},
+		{name: "unparseable URL", raw: "https://app.example.com:abc", wantErr: []string{"CORS_ALLOWED_ORIGINS", "abc"}},
+		{name: "one bad entry fails the whole list", raw: "https://a.example.com,b.example.com", wantErr: []string{"CORS_ALLOWED_ORIGINS", "b.example.com"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCORSOrigins(tt.raw)
+
+			if len(tt.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("parseCORSOrigins(%q) error = nil, want error containing %q", tt.raw, tt.wantErr)
+				}
+				for _, s := range tt.wantErr {
+					if !strings.Contains(err.Error(), s) {
+						t.Errorf("parseCORSOrigins(%q) error = %q, want it to contain %q", tt.raw, err, s)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parseCORSOrigins(%q) unexpected error: %v", tt.raw, err)
+			}
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("parseCORSOrigins(%q) mismatch (-want +got):\n%s", tt.raw, diff)
+			}
+		})
+	}
+}
+
+func TestNormalizeOrigin(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "already normalized", in: "https://app.example.com", want: "https://app.example.com"},
+		{name: "uppercase scheme", in: "HTTPS://app.example.com", want: "https://app.example.com"},
+		{name: "uppercase host", in: "https://App.EXAMPLE.com", want: "https://app.example.com"},
+		{name: "default https port is dropped", in: "https://app.example.com:443", want: "https://app.example.com"},
+		{name: "default http port is dropped", in: "http://app.example.com:80", want: "http://app.example.com"},
+		{name: "non-default port is kept", in: "https://app.example.com:8443", want: "https://app.example.com:8443"},
+		{name: "http port on https is kept", in: "https://app.example.com:80", want: "https://app.example.com:80"},
+		{name: "https port on http is kept", in: "http://app.example.com:443", want: "http://app.example.com:443"},
+		{name: "IPv6 host", in: "http://[::1]:5173", want: "http://[::1]:5173"},
+		{name: "IPv6 host with default port", in: "https://[::1]:443", want: "https://[::1]"},
+		{name: "port suffix inside the host is not trimmed", in: "http://host8080:8080", want: "http://host8080:8080"},
+		{name: "host ending in the default port digits", in: "http://example.com:5080", want: "http://example.com:5080"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.in)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tt.in, err)
+			}
+
+			if got := normalizeOrigin(u); got != tt.want {
+				t.Errorf("normalizeOrigin(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

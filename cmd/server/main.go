@@ -104,7 +104,10 @@ func run() error {
 		pinger = pool
 	}
 
-	handler = httpapi.NewHandler(store, logger, metrics, limiter)
+	handler = httpapi.NewHandler(
+		store, logger, metrics, limiter,
+		httpapi.CORSMiddlewareOpts{AllowedOrigins: cfg.corsOrigins, MaxAge: cfg.corsMaxAge},
+	)
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.port),
 		Handler:           handler,
