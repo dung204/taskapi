@@ -8,6 +8,24 @@ import (
 	"time"
 )
 
+type OriginPolicy struct {
+	allowed map[string]struct{}
+}
+
+func NewOriginPolicy(origins []string) *OriginPolicy {
+	allowed := make(map[string]struct{}, len(origins))
+	for _, o := range origins {
+		allowed[o] = struct{}{}
+	}
+
+	return &OriginPolicy{allowed: allowed}
+}
+
+func (p *OriginPolicy) Allows(origin string) bool {
+	_, ok := p.allowed[origin]
+	return ok
+}
+
 type CORSMiddlewareOpts struct {
 	AllowedOrigins []string
 	MaxAge         time.Duration
@@ -15,7 +33,6 @@ type CORSMiddlewareOpts struct {
 
 func corsMiddleware(opts CORSMiddlewareOpts) middleware {
 	allowedMethods := strings.Join([]string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete}, ", ")
-	// TODO: "Authorization" is not used yet; keep it only if auth is added, otherwise remove it.
 	allowedRequestHeaders := strings.Join([]string{"Content-Type", "X-Request-ID", "Authorization"}, ", ")
 	allowedResponseHeaders := strings.Join([]string{"X-Request-ID", "Retry-After"}, ", ")
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/dung204/taskapi/internal/apperr"
 	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 	"github.com/dung204/taskapi/internal/task"
 )
@@ -25,13 +26,13 @@ func newTaskHandler(s task.Store, l *slog.Logger) *taskHandler {
 const dbTimeout = 3 * time.Second
 
 func (h *taskHandler) CreateTask(ctx context.Context, request oapigen.CreateTaskRequestObject) (oapigen.CreateTaskResponseObject, error) {
-	p, err := request.Body.ToNewParams()
+	p, err := request.Body.ToTaskNewParams()
 	if err != nil {
 		return nil, err
 	}
 
 	t, err := task.New(p, time.Now())
-	if errors.Is(err, task.ErrInvalidInput) {
+	if errors.Is(err, apperr.ErrInvalidInput) {
 		return oapigen.CreateTask400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -42,7 +43,7 @@ func (h *taskHandler) CreateTask(ctx context.Context, request oapigen.CreateTask
 	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
 	defer cancel()
 
-	created, err := h.store.Create(dbCtx, *t)
+	created, err := h.store.Create(dbCtx, t)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func (h *taskHandler) ListTasks(ctx context.Context, request oapigen.ListTasksRe
 	defer cancel()
 
 	f, err := request.Params.ToListFilter()
-	if errors.Is(err, task.ErrInvalidInput) {
+	if errors.Is(err, apperr.ErrInvalidInput) {
 		return oapigen.ListTasks400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -92,7 +93,7 @@ func (h *taskHandler) UpdateTask(ctx context.Context, request oapigen.UpdateTask
 	defer cancel()
 
 	p, err := request.Body.ToPatch()
-	if errors.Is(err, task.ErrInvalidInput) {
+	if errors.Is(err, apperr.ErrInvalidInput) {
 		return oapigen.UpdateTask400JSONResponse{Error: err.Error()}, nil
 	}
 

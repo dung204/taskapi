@@ -11,6 +11,17 @@ import (
 	"uuid"
 )
 
+type Session struct {
+	ID                       uuid.UUID
+	UserID                   uuid.UUID
+	RefreshTokenHash         []byte
+	PreviousRefreshTokenHash []byte
+	RotatedAt                *time.Time
+	ExpiresAt                time.Time
+	CreatedAt                time.Time
+	UserAgent                *string
+}
+
 type Task struct {
 	ID          uuid.UUID
 	Title       string
@@ -19,4 +30,16 @@ type Task struct {
 	DueAt       *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	OwnerID     uuid.UUID
+}
+
+type User struct {
+	ID               uuid.UUID
+	Email            string
+	PasswordHash     *string
+	EmailVerifiedAt  *time.Time
+	DisabledAt       *time.Time
+	TokensValidAfter *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }

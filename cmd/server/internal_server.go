@@ -24,10 +24,10 @@ func pprofHandler() http.Handler {
 	return mux
 }
 
-func opsHandler(reg *prometheus.Registry, pinger storePinger) http.Handler {
+func opsHandler(reg *prometheus.Registry, logger *slog.Logger, checks ...*check) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", metricsHandler(reg))
-	mux.Handle("GET /healthz", healthHandler(pinger))
+	mux.Handle("GET /healthz", healthHandler(logger, checks...))
 	return mux
 }
 
@@ -57,7 +57,7 @@ func startInternalServer(ctx context.Context, name, addr string, handler http.Ha
 	return func() { _ = srv.Close() }, nil
 }
 
-func startInternalServers(ctx context.Context, cfg config, reg *prometheus.Registry, pinger storePinger, logger *slog.Logger) (stop func(), err error) {
+func startInternalServers(ctx context.Context, cfg config, reg *prometheus.Registry, checks []*check, logger *slog.Logger) (stop func(), err error) {
 	var stops []func()
 
 	stopAll := func() {
@@ -66,8 +66,8 @@ func startInternalServers(ctx context.Context, cfg config, reg *prometheus.Regis
 		}
 	}
 
-	if cfg.pprofAddr != "" {
-		stopPprof, err := startInternalServer(ctx, "pprof", cfg.pprofAddr, pprofHandler(), logger)
+	if cfg.addrs.pprof != "" {
+		stopPprof, err := startInternalServer(ctx, "pprof", cfg.addrs.pprof, pprofHandler(), logger)
 		if err != nil {
 			stopAll()
 			return nil, err
@@ -75,7 +75,7 @@ func startInternalServers(ctx context.Context, cfg config, reg *prometheus.Regis
 		stops = append(stops, stopPprof)
 	}
 
-	stopOps, err := startInternalServer(ctx, "ops", cfg.opsAddr, opsHandler(reg, pinger), logger)
+	stopOps, err := startInternalServer(ctx, "ops", cfg.addrs.ops, opsHandler(reg, logger, checks...), logger)
 	if err != nil {
 		stopAll()
 		return nil, err

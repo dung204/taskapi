@@ -2,35 +2,100 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type storePinger interface {
-	Ping(ctx context.Context) error
+type check struct {
+	name     string
+	ping     func(ctx context.Context) error
+	critical bool
+	healthy  atomic.Bool
 }
 
-func healthHandler(p storePinger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+func newCheck(name string, critical bool, ping func(ctx context.Context) error) *check {
+	c := &check{name: name, ping: ping, critical: critical}
+	c.healthy.Store(true) // a failure on the first probe is a transition worth logging
+	return c
+}
 
-		if p != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-			defer cancel()
+func (c *check) run(ctx context.Context, l *slog.Logger) error {
+	err := c.ping(ctx)
+	ok := err == nil
+	if c.healthy.Swap(ok) != ok {
+		if ok {
+			l.InfoContext(ctx, "health check recovered", "check", c.name)
+		} else {
+			l.WarnContext(ctx, "health check degraded", "check", c.name)
+		}
+	}
+	return err
+}
 
-			if err := p.Ping(ctx); err != nil {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = io.WriteString(w, `{"status":"unavailable","store":"unavailable"}`)
-				return
-			}
+const (
+	HealthStatusOK          = "ok"
+	HealthStatusDegraded    = "degraded"
+	HealthStatusUnavailable = "unavailable"
+)
+
+type healthResponse struct {
+	Status string            `json:"status"`
+	Checks map[string]string `json:"checks"`
+}
+
+func runChecks(ctx context.Context, l *slog.Logger, checks []*check) []error {
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+
+	errs := make([]error, len(checks))
+	var wg sync.WaitGroup
+	for i := range checks {
+		wg.Go(func() { errs[i] = checks[i].run(ctx, l) })
+	}
+	wg.Wait()
+	return errs
+}
+
+func summarize(checks []*check, errs []error) (healthResponse, int) {
+	status, code := HealthStatusOK, http.StatusOK
+	results := make(map[string]string, len(checks))
+	for i, c := range checks {
+		if errs[i] == nil {
+			results[c.name] = HealthStatusOK
+			continue
 		}
 
-		_, _ = io.WriteString(w, `{"status":"ok","store":"ok"}`)
+		results[c.name] = HealthStatusUnavailable
+		switch {
+		case c.critical:
+			status, code = HealthStatusUnavailable, http.StatusServiceUnavailable
+		case status == HealthStatusOK:
+			status = HealthStatusDegraded
+		}
+	}
+
+	return healthResponse{Status: status, Checks: results}, code
+}
+
+func writeJSON(w http.ResponseWriter, code int, resp healthResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func healthHandler(l *slog.Logger, checks ...*check) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		errs := runChecks(r.Context(), l, checks)
+		resp, code := summarize(checks, errs)
+		writeJSON(w, code, resp)
 	})
 }
 

@@ -22,7 +22,7 @@ func BenchmarkStore(b *testing.B, newStore func(tb testing.TB) task.Store) {
 				tb.Fatalf("task.New: %v", err)
 			}
 
-			created, err := s.Create(tb.Context(), *nt)
+			created, err := s.Create(tb.Context(), nt)
 			if err != nil {
 				tb.Fatalf("Create: %v", err)
 			}

@@ -1,26 +1,26 @@
 -- name: CreateTask :exec
-INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at, owner_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetTask :one
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 WHERE id = $1;
 
 -- name: GetTaskForUpdate :one
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 WHERE id = $1
 FOR UPDATE;
 
 -- name: ListTasks :many
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 ORDER BY id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: ListTasksByStatus :many
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 WHERE status = sqlc.arg('status')
 ORDER BY id DESC

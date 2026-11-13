@@ -5,3 +5,5 @@ generate:
   models: true
   strict-server: true
   chi-server: true
+compatibility:
+  enable-auth-scopes-on-context: true

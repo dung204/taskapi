@@ -14,8 +14,8 @@ import (
 )
 
 const createTask = `-- name: CreateTask :exec
-INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at, owner_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type CreateTaskParams struct {
@@ -26,6 +26,7 @@ type CreateTaskParams struct {
 	DueAt       *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	OwnerID     uuid.UUID
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) error {
@@ -37,6 +38,7 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) error {
 		arg.DueAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.OwnerID,
 	)
 	return err
 }
@@ -55,7 +57,7 @@ func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 WHERE id = $1
 `
@@ -71,12 +73,13 @@ func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (Task, error) {
 		&i.DueAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnerID,
 	)
 	return i, err
 }
 
 const getTaskForUpdate = `-- name: GetTaskForUpdate :one
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 WHERE id = $1
 FOR UPDATE
@@ -93,12 +96,13 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 		&i.DueAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnerID,
 	)
 	return i, err
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 ORDER BY id DESC
 LIMIT $2 OFFSET $1
@@ -126,6 +130,7 @@ func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]Task, e
 			&i.DueAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -138,7 +143,7 @@ func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]Task, e
 }
 
 const listTasksByStatus = `-- name: ListTasksByStatus :many
-SELECT id, title, description, status, due_at, created_at, updated_at
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
 WHERE status = $1
 ORDER BY id DESC
@@ -168,6 +173,7 @@ func (q *Queries) ListTasksByStatus(ctx context.Context, arg ListTasksByStatusPa
 			&i.DueAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerID,
 		); err != nil {
 			return nil, err
 		}

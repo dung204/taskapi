@@ -35,10 +35,10 @@ COVER_LINK_BASE ?= $(if $(GITHUB_REPOSITORY),$(GITHUB_SERVER_URL)/$(GITHUB_REPOS
 
 # These are excluded from test coverage:
 # - *.gen.go, sqlcgen: Generated code
-# - tasktest, logtest: test utilities
+# - tasktest, authtest, emailtest, logtest, testutil: test utilities
 # - docs: embedded Swaager (OpenAPI) document
 # - cmd/server/{main,db,logger,pprof}.go: mostly wires libraries up and bootstraps the server
-COVER_EXCLUDE := \.gen\.go|/sqlcgen/|/tasktest/|/logtest/|/docs/|cmd/server/(main|db|logger|pprof)\.go
+COVER_EXCLUDE := \.gen\.go|/sqlcgen/|/tasktest/|/authtest/|/emailtest/|/logtest/|/testutil/|/docs/|cmd/server/(main|db|logger|pprof)\.go
 
 .PHONY: help
 help: ## Show this help

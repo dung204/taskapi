@@ -8,9 +8,9 @@ import (
 )
 
 func newLogger(cfg config) (*slog.Logger, error) {
-	opts := &slog.HandlerOptions{Level: cfg.logLevel}
+	opts := &slog.HandlerOptions{Level: cfg.logging.level}
 
-	switch cfg.logFormat {
+	switch cfg.logging.format {
 	case "text":
 		return slog.New(httpapi.NewRequestIDContextHandler(slog.NewTextHandler(os.Stderr, opts))), nil
 	default:

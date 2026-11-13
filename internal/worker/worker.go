@@ -1,60 +1,26 @@
-// Package worker runs the background scan that marks overdue tasks.
+// Package worker holds the background jobs of the server. Each job implements
+// [Runner]: it is started in its own goroutine and runs until its context is
+// cancelled, which is how graceful shutdown stops it.
+//
+// The jobs are:
+//
+//   - [OverdueScan] ticks at a fixed interval and marks overdue tasks through
+//     [task.Store.MarkOverdue]. A panic in one scan is recovered and logged, and
+//     the loop keeps going.
+//   - [OutboxDelivery] sends the queued emails of the outbox. It wakes up when it
+//     is notified of new items and, as a fallback, on a timer, so an item is not
+//     left waiting if a notification is lost.
+//
+// The package only depends on small interfaces for what it uses ([OutboxQueue],
+// [MessageBuilder], [Mailer]), so a job never sees a concrete backend. Anything
+// with a matching Run method can be run alongside them, for example the in-memory
+// rate limiter's cleanup loop.
 package worker
 
-import (
-	"context"
-	"log/slog"
-	"runtime/debug"
-	"time"
+import "context"
 
-	"github.com/dung204/taskapi/internal/task"
-)
-
-func Run(ctx context.Context, s task.Store, l *slog.Logger, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	l.InfoContext(ctx, "worker started", "interval", interval.String())
-	for {
-		select {
-		case <-ctx.Done():
-			l.InfoContext(ctx, "worker stopped")
-			return
-		case t := <-ticker.C:
-			scanOverdue(ctx, s, l, t)
-		}
-	}
-}
-
-func scanOverdue(ctx context.Context, s task.Store, l *slog.Logger, t time.Time) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			l.ErrorContext(ctx, "panic recovered",
-				"panic", rec,
-				"stack", string(debug.Stack()),
-			)
-		}
-	}()
-
-	markOverdueCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	now := time.Now()
-	marked, err := s.MarkOverdue(markOverdueCtx, t)
-	elapsed := time.Since(now)
-
-	if err != nil {
-		l.ErrorContext(ctx, "mark overdue failed", "error", err)
-		return
-	}
-
-	level := slog.LevelDebug
-	if marked > 0 {
-		level = slog.LevelInfo
-	}
-
-	l.Log(ctx, level, "overdue scan completed",
-		"count_updated", marked,
-		"duration_ms", float64(elapsed)/float64(time.Millisecond),
-	)
+// Runner is a background job. Run blocks until ctx is cancelled, so callers
+// start it with go.
+type Runner interface {
+	Run(ctx context.Context)
 }

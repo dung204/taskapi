@@ -1,12 +1,13 @@
 package main
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/dung204/taskapi/internal/testutil/logtest"
 )
 
 func TestInternalHandlers(t *testing.T) {
@@ -17,7 +18,9 @@ func TestInternalHandlers(t *testing.T) {
 	})
 	reg.MustRegister(marker)
 
-	boom := mockPinger{err: errors.New("boom")}
+	logger, _ := logtest.New()
+	critical := newCheck("postgres", true, failPing)
+	optional := newCheck("redis", false, failPing)
 
 	tests := []struct {
 		name           string
@@ -25,11 +28,12 @@ func TestInternalHandlers(t *testing.T) {
 		method, path   string
 		wantStatusCode int
 	}{
-		{"healthz wired to the pinger", opsHandler(reg, boom), "GET", "/healthz", 503},
-		{"healthz without pinger", opsHandler(reg, nil), "GET", "/healthz", 200},
-		{"healthz is GET only", opsHandler(reg, nil), "POST", "/healthz", 405},
-		{"metrics served from reg", opsHandler(reg, nil), "GET", "/metrics", 200},
-		{"pprof not on the ops port", opsHandler(reg, nil), "GET", "/debug/pprof/", 404},
+		{"healthz wired to a critical check", opsHandler(reg, logger, critical), "GET", "/healthz", 503},
+		{"healthz with a failing optional check", opsHandler(reg, logger, optional), "GET", "/healthz", 200},
+		{"healthz without checks", opsHandler(reg, logger), "GET", "/healthz", 200},
+		{"healthz is GET only", opsHandler(reg, logger), "POST", "/healthz", 405},
+		{"metrics served from reg", opsHandler(reg, logger), "GET", "/metrics", 200},
+		{"pprof not on the ops port", opsHandler(reg, logger), "GET", "/debug/pprof/", 404},
 		{"pprof served", pprofHandler(), "GET", "/debug/pprof/", 200},
 		{"pprof heap served", pprofHandler(), "GET", "/debug/pprof/heap", 200},
 		{"metrics not on the pporf port", pprofHandler(), "GET", "/metrics", 404},

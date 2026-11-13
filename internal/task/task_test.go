@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/dung204/taskapi/internal/apperr"
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/task/tasktest"
 )
@@ -77,14 +78,14 @@ func TestPatch(t *testing.T) {
 			patch: task.Patch{
 				Title: new(""),
 			},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			name: "title 201 chars",
 			patch: task.Patch{
 				Title: new(strings.Repeat("a", 201)),
 			},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 
 		{
@@ -102,7 +103,7 @@ func TestPatch(t *testing.T) {
 			patch: task.Patch{
 				Description: new(strings.Repeat("a", 2001)),
 			},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 
 		{
@@ -155,7 +156,7 @@ func TestPatch(t *testing.T) {
 			patch: task.Patch{
 				Title: new(" \t\n  "),
 			},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			name: "title is trimmed",
@@ -263,7 +264,7 @@ func TestPatch(t *testing.T) {
 				Title:       new("Updated task title"),
 				Description: new(strings.Repeat("a", 2001)),
 			},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			name: "valid fields then invalid status is not applied",
@@ -355,7 +356,7 @@ func TestNew(t *testing.T) {
 			params: task.NewParams{
 				Title: "",
 			},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			name:   "title with exactly 200 chars",
@@ -367,12 +368,12 @@ func TestNew(t *testing.T) {
 		{
 			name:    "title with 201 chars",
 			params:  task.NewParams{Title: strings.Repeat("a", 201)},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			name:    "title with only whitespace",
 			params:  task.NewParams{Title: " \t\n  "},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			name:   "title is trimmed",
@@ -391,7 +392,7 @@ func TestNew(t *testing.T) {
 		{
 			name:    "description with 2001 chars",
 			params:  task.NewParams{Title: "Task title", Description: new(strings.Repeat("a", 2001))},
-			wantErr: task.ErrInvalidInput,
+			wantErr: apperr.ErrInvalidInput,
 		},
 		{
 			// 2026-10-01T00:00:30.123456789+07:00 is 2026-09-30T17:00:30.123456Z
@@ -430,7 +431,7 @@ func TestNew(t *testing.T) {
 				t.Fatalf("task.Patch() unexpected error: %v", gotErr)
 			}
 
-			tasktest.CheckTask(t, *gotTask, tt.wantTask, cmpopts.IgnoreFields(task.Task{}, "ID"))
+			tasktest.CheckTask(t, gotTask, tt.wantTask, cmpopts.IgnoreFields(task.Task{}, "ID"))
 		})
 	}
 }

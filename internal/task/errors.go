@@ -1,13 +1,15 @@
 package task
 
 import (
-	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/dung204/taskapi/internal/apperr"
 )
 
-var ErrNotFound = errors.New("task not found")
-var ErrInvalidInput = errors.New("invalid input")
-var ErrInvalidGetStatus = fmt.Errorf("%w: status must be one of the following: %s", ErrInvalidInput, strings.Join(allowedGetStatuses, ", "))
-var ErrInvalidPatchStatus = fmt.Errorf("%w: status must be one of the following: %s", ErrInvalidInput, strings.Join(allowedPatchStatuses, ", "))
-var ErrServiceUnavailable = errors.New("service unavailable")
+var (
+	ErrNotFound = fmt.Errorf("task: %w", apperr.ErrNotFound)
+
+	ErrInvalidGetStatus   = fmt.Errorf("%w: status must be one of the following: %s", apperr.ErrInvalidInput, strings.Join(allowedGetStatuses, ", "))
+	ErrInvalidPatchStatus = fmt.Errorf("%w: status must be one of the following: %s", apperr.ErrInvalidInput, strings.Join(allowedPatchStatuses, ", "))
+)

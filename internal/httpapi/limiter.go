@@ -16,18 +16,27 @@ type keyFunc func(r *http.Request) (key string, ok bool)
 
 var _ keyFunc = byIP
 
-func byIP(r *http.Request) (key string, ok bool) {
+func remoteAddr(r *http.Request) (netip.Addr, bool) {
 	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
+		return netip.Addr{}, false
+	}
+	return ap.Addr().Unmap(), true
+}
+
+func throttleAddr(a netip.Addr) netip.Addr {
+	if a.Is6() {
+		return netip.PrefixFrom(a, 64).Masked().Addr()
+	}
+	return a
+}
+
+func byIP(r *http.Request) (key string, ok bool) {
+	a, ok := remoteAddr(r)
+	if !ok {
 		return "", false
 	}
-
-	addr := ap.Addr().Unmap()
-	if addr.Is6() {
-		addr = netip.PrefixFrom(addr, 64).Masked().Addr()
-	}
-
-	return "ip:" + addr.String(), true
+	return "ip:" + throttleAddr(a).String(), true
 }
 
 func rateLimit(l Limiter, key keyFunc) middleware {

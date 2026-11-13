@@ -23,6 +23,8 @@ type MemoryLimiter struct {
 	now     func() time.Time
 }
 
+var _ Limiter = (*MemoryLimiter)(nil)
+
 func NewMemoryLimiter(limit rate.Limit, burst int) *MemoryLimiter {
 	refill := time.Duration(float64(burst) / float64(limit) * float64(time.Second))
 	ttl := max(5*time.Minute, refill)

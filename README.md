@@ -64,16 +64,51 @@ Settings come from environment variables (see `.env.example`). An empty value co
 | `DATABASE_URL`    | (none)   | Postgres connection string. Required when `STORE=postgres`                  |
 | `LOG_FORMAT`      | `text`   | Log format: `text` or `json`                                                |
 | `LOG_LEVEL`       | `info`   | Log level: `debug`, `info`, `warn` or `error`                               |
-| `WORKER_ENABLED`  | `true`   | Run the background worker that marks overdue tasks                          |
-| `WORKER_INTERVAL` | `30s`    | How often the worker scans, as a positive duration such as `500ms`, `30s` or `1m` |
+| `OVERDUE_SCAN_WORKER_ENABLED`  | `true`   | Run the background worker that marks overdue tasks                          |
+| `OVERDUE_SCAN_WORKER_INTERVAL` | `30s`    | How often the worker scans, as a positive duration such as `500ms`, `30s` or `1m` |
 | `OPS_ADDR`        | `127.0.0.1:9091` | Listen address of the ops server (`/healthz`, `/metrics`), such as `:9091` |
 | `PPROF_ADDR`      | (none)   | Listen address of the pprof server, such as `127.0.0.1:6060`. Unset means no pprof server |
 | `RATE_LIMIT_RPS`  | `10`     | Requests per second allowed for each client (float such as `0.5`). `0` disables rate limiting |
 | `RATE_LIMIT_BURST` | `20`    | Bucket size for each client, an integer of at least 1. Only checked when rate limiting is on |
 | `CORS_ALLOWED_ORIGINS` | (none) | Origins allowed to call the API from a browser, comma-separated, such as `https://app.example.com,http://localhost:5173`. `*` allows any origin. Empty disables CORS |
 | `CORS_MAX_AGE`    | `10m`    | How long browsers may cache a CORS preflight, a non-negative duration in whole seconds. Only checked when `CORS_ALLOWED_ORIGINS` is set. `0` omits the header |
+| `APP_BASE_URL`    | `http://localhost:5173` | Base URL the links in verification and password-reset emails point at: a bare `scheme://host[:port]` origin, with no path or trailing slash |
+| `REDIS_URL`       | (none)   | Redis connection URL, such as `redis://user:password@host:port/db` (the user can be omitted for the default user). Backs the login and mail-request limiters |
+| `JWT_PRIVATE_KEY_PATH` | (none) | Path to the Ed25519 private key that signs access tokens (JWT, EdDSA). Generate the pair with `go run ./cmd/keygen`. Keep it secret and out of git |
+| `JWT_PUBLIC_KEY_PATH` | (none) | Path to the matching Ed25519 public key, used to verify access tokens |
+| `JWT_ISSUER`      | (none)   | Value of the `iss` claim. Tokens with another issuer are rejected. Any stable string, such as `taskapi` |
+| `JWT_AUDIENCES`   | (none)   | Values of the `aud` claim, comma-separated. New tokens carry all of them, and a token is accepted if it has at least one, so a value can be retired without logging everyone out |
+| `ACCESS_TTL`      | `10m`    | Lifetime of an access token. Keep it short, since a JWT cannot be revoked before it expires |
+| `REFRESH_TTL`     | `720h`   | Lifetime of a refresh token, so of a login session. Go durations have no day unit: write days as hours (`720h` is 30 days) |
+| `VERIFY_EMAIL_TOKEN_TTL` | `24h` | Lifetime of the link in a verification email, a positive Go duration |
+| `RESET_PASSWORD_TOKEN_TTL` | `1h` | Lifetime of the link in a password-reset email, a positive Go duration. Keep it short |
+| `ARGON2_TIME`     | `3`      | Argon2id passes over the memory (`t`), at least 1 |
+| `ARGON2_MEMORY_KIB` | `65536` | Argon2id memory per hash in KiB (`m`), at least `8 * ARGON2_THREADS`. `65536` is 64 MiB |
+| `ARGON2_THREADS`  | `4`      | Argon2id parallelism (`p`), at least 1. Changing it changes the hash output, so keep it the same for the lifetime of your stored hashes |
+| `ARGON2_CONCURRENCY` | CPU cores / `ARGON2_THREADS`, at least 1 | Most hashes computed at once, extra requests wait. Peak memory is `ARGON2_CONCURRENCY * ARGON2_MEMORY_KIB` |
+| `LOGIN_FREE_ATTEMPTS` | `4`  | Failed logins per email address allowed before the first lock, at least 1 |
+| `LOGIN_BACKOFF`   | `30s,1m,5m,15m` | Lock time after each further failed login, comma-separated durations in whole milliseconds (at least `1ms`). The last value repeats. A locked address gets 429 with `Retry-After`, even for the right password |
+| `LOGIN_WINDOW`    | `1h`     | How long the failed-login counter is kept, renewed by every attempt. At least the longest `LOGIN_BACKOFF` step |
+| `MAIL_REQUEST_COOLDOWN` | `60s` | Minimum time between two verification or password-reset mail requests for the same address, in whole milliseconds (at least `1ms`) |
+| `MAIL_REQUEST_HOURLY_MAX` | `5` | Most such requests per address in one hour, at least 1. Over the limit the endpoint answers 429 with `Retry-After` |
+| `OUTBOX_LEASE`    | `5m`     | How long a worker owns a claimed batch of queued emails before another may take it. Must be greater than `OUTBOX_BATCH_SIZE * OUTBOX_SEND_TIMEOUT` |
+| `OUTBOX_BATCH_SIZE` | `5`    | Most emails claimed and sent in one batch, at least 1 |
+| `OUTBOX_SEND_TIMEOUT` | `30s` | Time limit for sending one email of a batch, a positive duration |
+| `OUTBOX_POLL_INTERVAL` | `30s` | How often the delivery worker looks for queued emails on its own, as a safety net for a missed notification. A positive duration |
+| `OUTBOX_MAX_ATTEMPTS` | `6` | Most times one email is tried, the first try included. After that it is marked failed. `1` means no retry. At least 1 |
+| `OUTBOX_RETRY_BASE` | `1m` | Wait before the first retry. Later retries wait longer, up to `OUTBOX_RETRY_CAP`. A positive duration |
+| `OUTBOX_RETRY_CAP` | `15m` | Longest wait between two tries. A positive duration, at least `OUTBOX_RETRY_BASE` |
+| `OUTBOX_SENT_RETENTION` | `168h` | How long a sent email stays in the outbox before it is deleted. A positive duration; write days as hours (`168h` is 7 days) |
+| `CLEANUP_INTERVAL` | `1h` | How often the cleanup job deletes data that is past its retention, such as sent emails older than `OUTBOX_SENT_RETENTION`. A positive duration |
+| `SMTP_HOST`       | (none)   | Host name of the SMTP server that sends the emails. Required |
+| `SMTP_PORT`       | `587`    | Port of the SMTP server (1-65535). A local mail catcher usually uses `1025` |
+| `SMTP_TLS_MODE`   | `starttls` | `starttls` (TLS required), `opportunistic` (TLS if the server offers it) or `none` (never, for local mail catchers) |
+| `SMTP_TIMEOUT`    | `10s`    | Time limit for connecting and sending one email, a positive duration |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | (none) | Credentials for SMTP authentication. Set both, or neither to send without authentication |
+| `SMTP_FROM`       | (none)   | Sender address, such as `taskapi@example.com` or `Task API <taskapi@example.com>`. Required |
 | `GRAFANA_ADMIN_PASSWORD` | (none) | Grafana admin password. Only used by `docker-compose.yml`, never by the server |
 | `TEST_DATABASE_URL` | (none) | Postgres connection string for the store tests. Not read by the server      |
+| `TEST_REDIS_URL`  | (none)   | Redis connection URL for the Redis-backed tests. Not read by the server     |
 
 Example:
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dung204/taskapi/internal/apperr"
+	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/task"
 )
 
@@ -34,13 +36,13 @@ func parseTime(field string, s *string) (*time.Time, error) {
 
 	t, err := time.Parse(time.RFC3339, *s)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s must be an RFC3339 date-time, for example 2030-01-01T00:00:00Z", task.ErrInvalidInput, field)
+		return nil, fmt.Errorf("%w: %s must be an RFC3339 date-time, for example 2030-01-01T00:00:00Z", apperr.ErrInvalidInput, field)
 	}
 
 	return &t, nil
 }
 
-func (r *CreateTaskRequest) ToNewParams() (task.NewParams, error) {
+func (r *CreateTaskRequest) ToTaskNewParams() (task.NewParams, error) {
 	dueAt, err := parseTime("due_at", r.DueAt)
 	if err != nil {
 		return task.NewParams{}, err
@@ -85,7 +87,7 @@ func (p ListTasksParams) ToListFilter() (task.ListFilter, error) {
 	limit := defaultLimit
 	if p.Limit != nil {
 		if *p.Limit < 1 {
-			return task.ListFilter{}, fmt.Errorf("%w: limit is invalid", task.ErrInvalidInput)
+			return task.ListFilter{}, fmt.Errorf("%w: limit is invalid", apperr.ErrInvalidInput)
 		}
 		limit = min(*p.Limit, maxLimit)
 	}
@@ -93,7 +95,7 @@ func (p ListTasksParams) ToListFilter() (task.ListFilter, error) {
 	offset := defaultOffset
 	if p.Offset != nil {
 		if *p.Offset < 0 {
-			return task.ListFilter{}, fmt.Errorf("%w: offset is invalid", task.ErrInvalidInput)
+			return task.ListFilter{}, fmt.Errorf("%w: offset is invalid", apperr.ErrInvalidInput)
 		}
 		offset = *p.Offset
 	}
@@ -111,4 +113,38 @@ func (p ListTasksParams) ToListFilter() (task.ListFilter, error) {
 		Offset: offset,
 		Status: status,
 	}, nil
+}
+
+// ParseRefreshToken returns the refresh token of a Logout or RefreshToken
+// request and whether it came from the cookie. A token in the body wins; the
+// cookie is used when the body has none. When the token comes from the cookie,
+// a present Origin header must satisfy originAllowed, otherwise
+// apperr.ErrForbidden is returned. A missing token yields an empty string, which
+// the service rejects.
+func ParseRefreshToken(cookie *RefreshTokenCookie, origin *OriginHeader, body *RefreshRequest, originAllowed func(string) bool) (token string, fromCookie bool, err error) {
+	if body != nil && body.RefreshToken != nil && *body.RefreshToken != "" {
+		return *body.RefreshToken, false, nil
+	}
+
+	if cookie != nil {
+		if origin != nil && !originAllowed(*origin) {
+			return "", true, apperr.ErrForbidden
+		}
+		return *cookie, true, nil
+	}
+
+	return "", false, nil
+}
+
+func (m TokenMode) IsValid() bool {
+	return m == Cookie || m == Token
+}
+
+func ToAPIUser(u auth.User) User {
+	return User{
+		Id:            u.ID,
+		Email:         u.Email,
+		EmailVerified: u.EmailVerifiedAt != nil,
+		CreatedAt:     u.CreatedAt,
+	}
 }

@@ -9,17 +9,1149 @@ info:
     Every error response has the same shape: `{"error": "<message>"}`.
     Internal details of 500 errors are never exposed, they are only logged.
 
+    Authentication: send `Authorization: Bearer <access token>`. Tokens come from
+    `POST /auth/login`. Only the endpoints under `/auth` that start a session or
+    prove an email address are public; every other endpoint needs a token.
+
 servers:
   - url: http://localhost:8080
     description: Local development
 
+security:
+  - bearerAuth: []
+
 tags:
-  - name: health
-    description: Liveness and dependency checks
+  - name: auth
+    description: Registration, email verification, sessions and password reset
+  - name: me
+    description: The authenticated user
   - name: tasks
     description: Task CRUD
 
 paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Register an account
+      description: |
+        Answers 202 for every well-formed request, whether or not the email is
+        already registered, so the response never reveals which emails have an
+        account. An unknown address gets a verification email; an address that
+        already has an account gets an "already registered" email instead. The
+        account cannot sign in until the email is verified.
+
+        Limited per client IP and per email address (429 with `Retry-After`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/Accepted"
+        "400":
+          description: |
+            The request is rejected before anything is created or sent:
+
+            - the body is missing, is not valid JSON, is not an object, or a field has the wrong type
+            - `email` is missing or not a valid address, or longer than 254 characters
+            - `password` is missing, not 8 to 128 characters long, or not valid UTF-8
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`email` is not of the type the schema says"
+                  value:
+                    error: "field \"email\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                invalidEmail:
+                  summary: "The email is missing, not a valid address, or longer than 254 characters (after trimming)"
+                  value:
+                    error: "invalid input: invalid email: email must be a valid email and have at most 254 characters"
+                passwordLength:
+                  summary: "The password is missing or not 8 to 128 characters long (counted after Unicode NFKC normalization)"
+                  value:
+                    error: "invalid input: invalid password: length must be between 8 and 128"
+                passwordNotUtf8:
+                  summary: "The password is not valid UTF-8"
+                  value:
+                    error: "invalid input: invalid password: must be valid UTF-8"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+
+            The per-email mail limit applies too: one mail request per address in a
+            cooldown period and a small number per hour. Registration, resending the
+            verification email and asking for a password reset share this budget, and a
+            registration for an address that already has an account counts as well. The
+            limit is checked before anything is created or queued. The answer is the same
+            whether or not the address has an account.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/verify-email:
+    post:
+      tags: [auth]
+      operationId: verifyEmail
+      summary: Verify an email address
+      description: |
+        The link in the verification email opens a page of the web or mobile
+        app, which calls this endpoint with the token in the body. It is a POST
+        on purpose: mail scanners follow links and would use up a one-time token
+        behind a GET.
+
+        An unknown, expired or already used token gets the same 400.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyEmailRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            - the body is missing, is not valid JSON, is not an object, or `token` has the wrong type
+            - the token cannot be used: it is empty, malformed, unknown, expired, already used, or was issued for a password reset instead of email verification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`token` is not of the type the schema says"
+                  value:
+                    error: "field \"token\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                tokenInvalid:
+                  summary: "The token is empty, longer than 128 characters, malformed, unknown, expired, already used, or issued for another purpose. All of these give this one message, so the answer never says why"
+                  value:
+                    error: "token is invalid"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/resend-verification:
+    post:
+      tags: [auth]
+      operationId: resendVerification
+      summary: Send the verification email again
+      description: |
+        Always 202 for a well-formed request, whatever the state of the account.
+        Limited per client IP and per email address, like registration.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/Accepted"
+        "400":
+          description: |
+            - the body is missing, is not valid JSON, is not an object, or `email` has the wrong type
+            - `email` is missing, not a valid address, or longer than 254 characters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`email` is not of the type the schema says"
+                  value:
+                    error: "field \"email\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                invalidEmail:
+                  summary: "The email is missing, not a valid address, or longer than 254 characters (after trimming)"
+                  value:
+                    error: "invalid input: invalid email: email must be a valid email and have at most 254 characters"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+
+            The per-email mail limit applies too (shared with registration and password
+            reset), and the limited answer is the same for unknown and verified accounts.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Sign in
+      description: |
+        Checks run in this order, which decides the status code:
+
+        1. The body is validated: 400.
+        2. The client IP and the email address are checked against the login
+           limits: 429 with `Retry-After`. While an email address is waiting,
+           even the right password is refused with 429. Wrong
+           `current_password` attempts of `PUT /me/password` share this budget.
+        3. The password is verified: 401, with the same message whether the
+           email is unknown or the password is wrong.
+        4. Only when the password is right: 403 if the email is not verified yet
+           or the account is disabled.
+        5. Otherwise 200.
+
+        `token_mode` decides where the refresh token goes. `token` (the default)
+        returns it in the body. `cookie` sets it as the `refresh_token` cookie
+        (`HttpOnly`, `Secure`, `Path=/auth`) and leaves it out of the body. The
+        access token is always in the body.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              description: |
+                The `refresh_token` cookie. Only in `cookie` mode.
+              required: false
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: |
+            Checked first, before any limit or password check:
+
+            - the body is missing, is not valid JSON, is not an object, or a field has the wrong type
+            - `email` is missing, not a valid address, or longer than 254 characters
+            - `password` is missing, empty, longer than 128 characters (counted after Unicode
+              NFKC normalization), or not valid UTF-8. A password that is merely too short is
+              not rejected here: it is a wrong password and gets 401
+            - `token_mode` is neither `token` nor `cookie`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`email` is not of the type the schema says"
+                  value:
+                    error: "field \"email\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                invalidEmail:
+                  summary: "The email is missing, not a valid address, or longer than 254 characters (after trimming)"
+                  value:
+                    error: "invalid input: invalid email: email must be a valid email and have at most 254 characters"
+                passwordInvalid:
+                  summary: "The password is missing, empty, or longer than 128 characters (counted after Unicode NFKC normalization)"
+                  value:
+                    error: "invalid input: invalid password: must not be empty and must have at most 128 characters"
+                passwordNotUtf8:
+                  summary: "The password is not valid UTF-8"
+                  value:
+                    error: "invalid input: invalid password: must be valid UTF-8"
+                invalidTokenMode:
+                  summary: "`token_mode` is not one of the allowed values"
+                  value:
+                    error: "invalid input: token_mode must be one of the following: \"token\", \"cookie\""
+        "401":
+          description: |
+            The email is unknown, or the password is wrong. Both give the same message, and
+            an unverified or disabled account with a wrong password is also a 401, never a
+            403, so the status does not reveal the account state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidCredentials:
+                  summary: "Unknown email or wrong password"
+                  value:
+                    error: "invalid email or password"
+        "403":
+          description: |
+            Only returned after the password was verified as right:
+
+            - the email address has not been verified yet (use `POST /auth/resend-verification`)
+            - the account is disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                emailNotVerified:
+                  summary: "Right password, email not verified"
+                  value:
+                    error: "email not verified"
+                accountDisabled:
+                  summary: "Right password, account disabled"
+                  value:
+                    error: "account disabled"
+        "429":
+          description: |
+            Checked after the body is valid and before the password:
+
+            - the client IP exceeded the request rate limit that applies to every endpoint
+            - the email address is waiting after too many failed logins: the first few
+              attempts are free, then each wrong attempt makes the address wait longer.
+              While it waits, **even the right password** is refused with this status.
+              A successful login resets the counter.
+
+            Wait at least `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit or email waiting after failed logins"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      summary: Get a new access token
+      description: |
+        The refresh token is read from the request body, or from the
+        `refresh_token` cookie when the body has none. The answer follows where
+        it came from: a token sent in the cookie is replaced by a new cookie, a
+        token sent in the body is replaced by a new `refresh_token` in the body.
+
+        Every refresh token is single use and is replaced by the next one. For
+        15 seconds after a replacement the old token is still accepted, to
+        cover two browser tabs refreshing at once. In that window only a new
+        access token is returned: no `refresh_token` in the body and no new
+        cookie, so the client keeps the one it got from the other response.
+        After the 15 seconds (the default, `REFRESH_GRACE_PERIOD`), presenting
+        the old token revokes the whole session.
+
+        Replacing a token does not extend the session: every token of a session
+        expires when the session does, and so does the cookie.
+
+        When the body has a `refresh_token`, it is used and the cookie is
+        ignored. In `cookie` mode the `Origin` header, when present, must be an
+        allowed origin (403 otherwise).
+
+        This endpoint does not check the length of `refresh_token`, although the
+        schema says at most 128 characters: a token that is too long is simply not
+        a token this API issued, so it gets the same 401 as an unknown one. A
+        disabled account is refused with 403 and gets no new tokens, also inside the
+        grace period.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/RefreshTokenCookie"
+        - $ref: "#/components/parameters/OriginHeader"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: A new access token.
+          headers:
+            Set-Cookie:
+              description: |
+                The new `refresh_token` cookie. Only when the token was sent in
+                the cookie and this is not a grace-period answer.
+              required: false
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: |
+            - the body is not valid JSON, is not an object, or `refresh_token` is not a string
+
+            A missing body, `{}`, a missing token and a token longer than 128 characters are
+            not 400: they are 401, like any other token that is not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`refresh_token` is not of the type the schema says"
+                  value:
+                    error: "field \"refresh_token\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+        "401":
+          description: |
+            The refresh token is not accepted. Every case gets the same message:
+
+            - no token was sent, in neither the cookie nor the body
+            - the token is unknown, malformed (including one longer than 128 characters), or an access token
+            - the session expired or was revoked, or its user no longer exists
+            - the token was already replaced more than 15 seconds ago. This is treated as
+              theft and revokes the whole session, including the newest token
+
+            In `cookie` mode the response also clears the `refresh_token` cookie.
+            The exception is losing a race: when another request replaced the same
+            token at the very same moment, this one gets a plain 401 and the cookie
+            is kept, because the other response carries the new one.
+          headers:
+            Set-Cookie:
+              $ref: "#/components/headers/ClearRefreshCookie"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            - `cookie` mode only: the request has an `Origin` header that is not an allowed
+              origin. The check happens before the token is looked up, so the token is **not**
+              used up. Requests without an `Origin` header (not from a browser) are not
+              checked, and neither are tokens sent in the body.
+            - the token is valid but the account was disabled. No new tokens are issued,
+              and this includes the grace period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                forbiddenOrigin:
+                  summary: "Foreign `Origin` with a cookie token"
+                  value:
+                    error: "forbidden"
+                accountDisabled:
+                  summary: "The token is valid, but the account is disabled"
+                  value:
+                    error: "account disabled"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Sign out this session
+      description: |
+        Identified by the refresh token (body or cookie), not by the access
+        token, so it works after the access token has expired. Revokes the
+        session and its access tokens at once. Always 204, even for an unknown,
+        malformed, too long or already revoked token, or none at all; the
+        `refresh_token` cookie is cleared every time.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/RefreshTokenCookie"
+        - $ref: "#/components/parameters/OriginHeader"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "204":
+          description: Signed out, no body.
+          headers:
+            Set-Cookie:
+              description: Clears the `refresh_token` cookie.
+              required: false
+              schema:
+                type: string
+        "400":
+          description: |
+            - the body is not valid JSON, is not an object, or `refresh_token` is not a string
+
+            A missing body, `{}`, an unknown or already revoked token and a token longer
+            than 128 characters are not errors: they are 204.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`refresh_token` is not of the type the schema says"
+                  value:
+                    error: "field \"refresh_token\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+        "403":
+          description: |
+            `cookie` mode only: the request has an `Origin` header that is not an allowed
+            origin. Nothing is revoked. Requests without an `Origin` header and tokens sent
+            in the body are not checked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                forbiddenOrigin:
+                  summary: "Foreign `Origin` with a cookie token"
+                  value:
+                    error: "forbidden"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/logout-all:
+    post:
+      tags: [auth]
+      operationId: logoutAll
+      summary: Sign out every session of the user
+      description: |
+        Revokes all sessions and every access token issued so far, on all
+        devices, including the one making this call.
+      responses:
+        "204":
+          description: Signed out everywhere, no body.
+          headers:
+            Set-Cookie:
+              description: Clears the `refresh_token` cookie.
+              required: false
+              schema:
+                type: string
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/forgot-password:
+    post:
+      tags: [auth]
+      operationId: forgotPassword
+      summary: Ask for a password reset email
+      description: |
+        Always 202 for a well-formed request, whether or not the email has an
+        account. Limited per client IP and per email address.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "202":
+          $ref: "#/components/responses/Accepted"
+        "400":
+          description: |
+            - the body is missing, is not valid JSON, is not an object, or `email` has the wrong type
+            - `email` is missing, not a valid address, or longer than 254 characters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`email` is not of the type the schema says"
+                  value:
+                    error: "field \"email\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                invalidEmail:
+                  summary: "The email is missing, not a valid address, or longer than 254 characters (after trimming)"
+                  value:
+                    error: "invalid input: invalid email: email must be a valid email and have at most 254 characters"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+
+            The per-email mail limit applies too (shared with registration and resending
+            the verification email), and the limited answer is the same for unknown
+            addresses.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/reset-password:
+    post:
+      tags: [auth]
+      operationId: resetPassword
+      summary: Set a new password with a reset token
+      description: |
+        Like email verification, the token comes from a link that opens a page
+        of the app, and it is sent in the body. On success every session of the
+        user is revoked. An unknown, expired or already used token gets the same
+        400.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            Nothing is changed and the token is **not** used up by a validation failure:
+
+            - the body is missing, is not valid JSON, is not an object, or a field has the wrong type
+            - `new_password` is missing, not 8 to 128 characters long, or not valid UTF-8
+            - the token cannot be used: it is empty, malformed, unknown, expired, already used, or was issued for email verification instead of a password reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`token` is not of the type the schema says"
+                  value:
+                    error: "field \"token\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                passwordLength:
+                  summary: "The password is missing or not 8 to 128 characters long (counted after Unicode NFKC normalization)"
+                  value:
+                    error: "invalid input: invalid password: length must be between 8 and 128"
+                passwordNotUtf8:
+                  summary: "The password is not valid UTF-8"
+                  value:
+                    error: "invalid input: invalid password: must be valid UTF-8"
+                tokenInvalid:
+                  summary: "The token is empty, longer than 128 characters, malformed, unknown, expired, already used, or issued for another purpose. All of these give this one message, so the answer never says why"
+                  value:
+                    error: "token is invalid"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /me:
+    get:
+      tags: [me]
+      operationId: getMe
+      summary: Get the signed-in user
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The access token is valid, but the account was disabled after it was issued.
+            Unlike the 401 cases, this tells the client that signing in again will not help.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                accountDisabled:
+                  summary: "The account is disabled"
+                  value:
+                    error: "account disabled"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /me/password:
+    put:
+      tags: [me]
+      operationId: changePassword
+      summary: Change the password
+      description: |
+        Checks run in this order, which decides the status code:
+
+        1. The body is validated: 400.
+        2. The client IP and the email address of the account are checked
+           against the login limits: 429 with `Retry-After`. While the address
+           is waiting, even the right `current_password` is refused with 429.
+        3. `current_password` is verified: 403 when it is wrong.
+        4. Otherwise 204.
+
+        A wrong `current_password` is 403, not 401: the access token is fine,
+        and a 401 would make a client refresh its token and retry.
+
+        Wrong `current_password` attempts use the same per-email limit as failed
+        logins and share its budget: wrong attempts here count against logins
+        and the other way round, and a success (here or at login) resets the
+        counter. Requests rejected with 400 do not count.
+
+        On success every session of the user is revoked, including this one,
+        so the client has to sign in again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            Checked before the current password is verified:
+
+            - the body is missing, is not valid JSON, is not an object, or a field has the wrong type
+            - `current_password` is missing, empty, longer than 128 characters (counted after Unicode
+              NFKC normalization), or not valid UTF-8. A merely short one is not rejected here: it
+              is a wrong password and gets 403
+            - `new_password` is missing, or not 8 to 128 characters long (counted after Unicode
+              NFKC normalization), or not valid UTF-8
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`new_password` is not of the type the schema says"
+                  value:
+                    error: "field \"new_password\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                currentPasswordInvalid:
+                  summary: "`current_password` is missing, empty, or longer than 128 characters (counted after Unicode NFKC normalization)"
+                  value:
+                    error: "invalid input: invalid password: must not be empty and must have at most 128 characters"
+                newPasswordLength:
+                  summary: "`new_password` is missing or not 8 to 128 characters long (counted after Unicode NFKC normalization)"
+                  value:
+                    error: "invalid input: invalid password: length must be between 8 and 128"
+                passwordNotUtf8:
+                  summary: "`current_password` or `new_password` is not valid UTF-8"
+                  value:
+                    error: "invalid input: invalid password: must be valid UTF-8"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            `current_password` is wrong, whatever its length: a password that is merely short
+            is wrong, not invalid, so it is a 403 and not a 400. This is a 403 and not a 401
+            on purpose: the access token is fine, and a 401 would make a client refresh its
+            token and retry. The session stays valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                wrongCurrentPassword:
+                  summary: "Wrong current password"
+                  value:
+                    error: "wrong current password"
+        "429":
+          description: |
+            Checked after the body is valid and before `current_password`:
+
+            - the client IP exceeded the request rate limit that applies to every endpoint
+            - the account's email address is waiting after too many failed logins or wrong
+              `current_password` attempts (they share one budget): the first few attempts are
+              free, then each wrong attempt makes the address wait longer. While it waits,
+              **even the right `current_password`** is refused with this status. A success
+              resets the counter.
+
+            Wait at least `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit or too many wrong attempts"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /tasks:
     get:
       tags: [tasks]
@@ -40,9 +1172,73 @@ paths:
                 items:
                   $ref: "#/components/schemas/Task"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            - `limit` is not an integer, or is lower than 1 (a value above 100 is clamped, not an error)
+            - `offset` is not an integer, or is negative
+            - `status` is not one of `todo`, `doing`, `done`, `overdue` (an empty `status=` means no filter)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                limitNotInteger:
+                  summary: "`limit` is not an integer"
+                  value:
+                    error: "invalid limit"
+                limitTooSmall:
+                  summary: "`limit` is lower than 1"
+                  value:
+                    error: "invalid input: limit is invalid"
+                offsetNotInteger:
+                  summary: "`offset` is not an integer"
+                  value:
+                    error: "invalid offset"
+                offsetNegative:
+                  summary: "`offset` is negative"
+                  value:
+                    error: "invalid input: offset is invalid"
+                statusNotAllowed:
+                  summary: "`status` is not a known status"
+                  value:
+                    error: "invalid input: status must be one of the following: todo, doing, done, overdue"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -66,9 +1262,97 @@ paths:
               schema:
                 $ref: "#/components/schemas/Task"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            Nothing is created:
+
+            - the body is missing, is not valid JSON, is not an object, or a field has the wrong type
+            - `title` is missing, empty or whitespace-only, or longer than 200 characters after trimming
+            - `description` is longer than 2000 characters
+            - `status` is `overdue` or not a known status
+            - `due_at` is not an RFC 3339 date-time
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`title` is not of the type the schema says"
+                  value:
+                    error: "field \"title\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                titleLength:
+                  summary: "After trimming, the title is empty or longer than 200 characters"
+                  value:
+                    error: "invalid input: title must have at least 1 and at most 200 characters"
+                descriptionLength:
+                  summary: "The description is longer than 2000 characters"
+                  value:
+                    error: "invalid input: description must have at most 2000 characters"
+                statusNotAllowed:
+                  summary: "The status is not one a client may set (`overdue` is system-set)"
+                  value:
+                    error: "invalid input: status must be one of the following: todo, doing, done"
+                dueAtFormat:
+                  summary: "`due_at` is not an RFC 3339 date-time"
+                  value:
+                    error: "invalid input: due_at must be an RFC3339 date-time, for example 2030-01-01T00:00:00Z"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -89,11 +1373,68 @@ paths:
               schema:
                 $ref: "#/components/schemas/Task"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            The `id` in the path is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
         "404":
-          $ref: "#/components/responses/NotFound"
+          description: |
+            No task has this `id`, or the task belongs to another user (the two cases are
+            not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or someone else's task"
+                  value:
+                    error: "task: not found"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -123,11 +1464,115 @@ paths:
               schema:
                 $ref: "#/components/schemas/Task"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            The update is atomic: if any of these applies, nothing is changed.
+
+            - the `id` in the path is not a valid UUID
+            - the body is not valid JSON, is not an object, or a field has the wrong type (an empty body is a 400 too; send `{}` to change nothing)
+            - `title` is empty or whitespace-only, or longer than 200 characters after trimming
+            - `description` is longer than 2000 characters
+            - `status` is `overdue` or not a known status
+            - `due_at` is not an RFC 3339 date-time
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`title` is not of the type the schema says"
+                  value:
+                    error: "field \"title\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                titleLength:
+                  summary: "After trimming, the title is empty or longer than 200 characters"
+                  value:
+                    error: "invalid input: title must have at least 1 and at most 200 characters"
+                descriptionLength:
+                  summary: "The description is longer than 2000 characters"
+                  value:
+                    error: "invalid input: description must have at most 2000 characters"
+                statusNotAllowed:
+                  summary: "The status is not one a client may set (`overdue` is system-set)"
+                  value:
+                    error: "invalid input: status must be one of the following: todo, doing, done"
+                dueAtFormat:
+                  summary: "`due_at` is not an RFC 3339 date-time"
+                  value:
+                    error: "invalid input: due_at must be an RFC3339 date-time, for example 2030-01-01T00:00:00Z"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
         "404":
-          $ref: "#/components/responses/NotFound"
+          description: |
+            No task has this `id`, or the task belongs to another user (the two cases are
+            not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or someone else's task"
+                  value:
+                    error: "task: not found"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -143,17 +1588,83 @@ paths:
         "204":
           description: Deleted, no body
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: |
+            The `id` in the path is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
         "404":
-          $ref: "#/components/responses/NotFound"
+          description: |
+            No task has this `id`, or the task belongs to another user (the two cases are
+            not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or someone else's task"
+                  value:
+                    error: "task: not found"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The access token from `POST /auth/login` or `POST /auth/refresh`. A
+        missing, malformed, expired or revoked token is 401.
+
   parameters:
     TaskId:
       name: id
@@ -192,6 +1703,27 @@ components:
       description: Only return tasks with this status.
       schema:
         $ref: "#/components/schemas/Status"
+
+    RefreshTokenCookie:
+      name: refresh_token
+      in: cookie
+      required: false
+      description: |
+        The refresh token, when the client chose `cookie` mode at login. Set by
+        the server; browsers send it only to paths under `/auth`.
+      schema:
+        type: string
+
+    OriginHeader:
+      name: Origin
+      in: header
+      required: false
+      description: |
+        Sent by browsers. In `cookie` mode it must be one of the allowed
+        origins when present, otherwise the request is refused with 403.
+        Requests without it (not from a browser) are not checked.
+      schema:
+        type: string
 
   schemas:
     TaskId:
@@ -294,6 +1826,160 @@ components:
           description: RFC 3339.
           x-go-type: string
 
+    UserId:
+      type: string
+      format: uuid
+      description: UUIDv7, generated by the server.
+      x-go-type: uuid.UUID
+      x-go-type-import:
+        path: uuid
+
+    Email:
+      type: string
+      format: email
+      maxLength: 254
+      description: Compared case-insensitively; stored in lower case.
+      x-go-type: string
+
+    Password:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: |
+        The password as typed, for checking against the stored one (`password` of
+        a login, `current_password` of a password change). Never returned.
+
+        Only an empty value, a value longer than 128 characters (counted after
+        Unicode NFKC normalization) and a value that is not valid UTF-8 are
+        rejected with 400. There is no minimum length here: a password that is
+        merely short is just a wrong password (401 on login, 403 on a password
+        change). The 8-character minimum applies to new passwords only
+        (`NewPassword`).
+      x-go-type: string
+
+    NewPassword:
+      type: string
+      minLength: 8
+      maxLength: 128
+      description: |
+        8 to 128 characters, counted after Unicode NFKC normalization, and valid
+        UTF-8. There are no composition rules (no required digits or symbols).
+      x-go-type: string
+
+    OneTimeToken:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: A single-use token from an email link.
+      x-go-type: string
+
+    TokenMode:
+      type: string
+      enum: [token, cookie]
+      default: token
+      description: |
+        Where the refresh token is delivered. `token`: in the response body.
+        `cookie`: in the `refresh_token` cookie only.
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+        password:
+          $ref: "#/components/schemas/NewPassword"
+
+    EmailRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          $ref: "#/components/schemas/OneTimeToken"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+        password:
+          $ref: "#/components/schemas/Password"
+        token_mode:
+          $ref: "#/components/schemas/TokenMode"
+
+    RefreshRequest:
+      type: object
+      description: |
+        Optional. Leave the body out, or send `{}`, when the refresh token is in
+        the cookie.
+      properties:
+        refresh_token:
+          type: string
+          maxLength: 128
+          description: The opaque refresh token.
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          $ref: "#/components/schemas/OneTimeToken"
+        new_password:
+          $ref: "#/components/schemas/NewPassword"
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          $ref: "#/components/schemas/Password"
+        new_password:
+          $ref: "#/components/schemas/NewPassword"
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: |
+            A signed JWT. Send it in the `Authorization` header as `Bearer <token>`.
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Seconds until the access token expires.
+        refresh_token:
+          type: string
+          description: |
+            The opaque refresh token. Present only in `token` mode, and absent
+            from a grace-period answer of `POST /auth/refresh`.
+
+    User:
+      type: object
+      required: [id, email, email_verified, created_at]
+      properties:
+        id:
+          $ref: "#/components/schemas/UserId"
+        email:
+          $ref: "#/components/schemas/Email"
+        email_verified:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
     Error:
       type: object
       required: [error]
@@ -302,44 +1988,30 @@ components:
           type: string
           description: Human-readable message.
 
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying, rounded up, at least 1.
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+
+    WWWAuthenticate:
+      description: Always `Bearer`.
+      required: true
+      schema:
+        type: string
+
+    ClearRefreshCookie:
+      description: |
+        Clears the `refresh_token` cookie (empty value, already expired). Only in
+        `cookie` mode.
+      required: false
+      schema:
+        type: string
+
   responses:
-    BadRequest:
-      description: |
-        Malformed JSON, a validation failure, an invalid query parameter, or an
-        `id` that is not a valid UUID.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-          example:
-            error: "invalid input: title must have at least 1 and at most 200 characters"
-
-    NotFound:
-      description: No task with this ID.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-          example:
-            error: task not found
-
-    TooManyRequests:
-      description: |
-        The client exceeded the rate limit. Wait at least `Retry-After` seconds
-        before retrying.
-      headers:
-        Retry-After:
-          description: Seconds to wait before retrying, rounded up, at least 1.
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-          example:
-            error: too many requests
 
     ServiceUnavailable:
       description: The database timed out or cannot be reached.
@@ -359,3 +2031,8 @@ components:
           example:
             error: internal server error
 
+    Accepted:
+      description: Accepted, no body. The answer is the same whatever the state of the account.
+
+    NoContent:
+      description: Done, no body.

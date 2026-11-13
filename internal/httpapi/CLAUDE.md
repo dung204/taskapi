@@ -1,0 +1,22 @@
+# internal/httpapi
+
+The package doc in `httpapi.go` describes the request pipeline, authentication and error mapping; read it first. This file only holds what the code does not make obvious.
+
+- **API changes start in `docs/openapi.yml`**: edit the spec, run `go generate ./...`, then implement the new interface methods. Handlers return expected outcomes (a 403 for a disabled account, a 429 with `Retry-After`) as the typed `...403/429JSONResponse` and everything else as an `error` for `handleResponseError` (in `errors.go`). Every new response status needs an entry in `openapi.yml` for every operation it can occur on; a `429` is on all of them.
+- **`handleResponseError`** has deliberate asymmetries: `DeadlineExceeded` returns 503 without logging, `ErrServiceUnavailable` returns 503 and logs, and `context.Canceled` writes nothing (the access log then shows 200). Converters in `oapigen/helpers.go` must wrap `apperr.ErrInvalidInput` so these are reported as 400.
+- **Per-route middlewares, not `r.Use`**: the rate limiter and the auth check are passed as `oapigen.ChiServerOptions.Middlewares`, because `r.Use` runs before chi matches a route and a rejected request would reach the metrics with the route label `unknown`. `/docs` and `/openapi.yaml` are therefore not limited. The generated wrapper applies them in a loop, so the last entry is the outermost: the limiter comes last in the slice so it runs first.
+- **The generated wrapper binds parameters before the per-route middlewares.** `NewHandler` therefore runs the same chain around the parameter-error response, otherwise a bad `limit` would be a 400 before the limiter and the token check. Keep that wrapper when touching `ErrorHandlerFunc`. Body-decoding errors already run after the middlewares.
+- **Auth middleware**: it only acts when the generated wrapper has put `oapigen.BearerAuthScopes` in the context, which it does for routes without `security: []`. Every failure is the same 401 with `WWW-Authenticate`. A failing revocation store is let through (fail open) and counted; do not change that to fail closed without a decision. Account state is not checked here, so a disabled user's access token keeps working until it expires on every route except `GET /me` (403) and refresh (403).
+- **Status conventions**: a wrong `current_password` is 403, not 401 (a 401 makes clients refresh and retry). Login answers 401 for any bad credentials, including too-short passwords; only an empty or too-long password is 400. Refresh answers 401 for every token problem, including one longer than 128 characters.
+- **Refresh tokens rotate** (logic in `auth.Service.Refresh`; the handler only maps results). The answer follows where the token came from: body token to body, cookie token to cookie only. A grace-period answer carries no refresh token. Logout and logout-all always answer 204 and clear the cookie, even for an invalid token.
+- **CORS is the outermost middleware**: it must stay first in `r.Use` so preflights are answered before the router (they would be 405), the rate limiter and the logging, and so every response, including `429` and recovered panics, carries the CORS headers. The cost is that preflights are not logged or counted in metrics. Set response headers before `WriteHeader`, or they are never sent.
+- **Wrapping `http.ResponseWriter`**: wrappers like `statusRecorder` must keep an `Unwrap() http.ResponseWriter` method so `http.ResponseController` still reaches the real writer.
+- **Auth tests** use `setupAuthTest` with a fake clock (`e.Advance`) and the fakes in `authfakes_test.go`. Revocation compares seconds, so a test that revokes tokens must `e.Advance(time.Second)` after issuing them, or the tokens are not revoked. Keep request counts under the per-IP limit (`rateLimitProbes`).
+
+## Known issues
+
+- Tasks are not scoped to their owner yet: `task.go` never reads the identity, although `OwnerID` exists in the domain and the spec says another user's task is a 404.
+- Account state is not checked in the auth middleware (see above).
+- `writeJSON` in `helpers.go` still prints errors to stderr instead of using the logger, and writes the status twice when marshalling fails (marked `TODO`).
+- The rate limiter keys clients by `RemoteAddr` only (`byIP`), so behind a proxy or Docker network every client shares one bucket; `X-Forwarded-For` is not honoured.
+- `cors.go` still has a `TODO` about the `Authorization` request header; it is used now, so the `TODO` can go.

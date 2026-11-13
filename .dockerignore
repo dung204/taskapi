@@ -31,5 +31,7 @@ docker-compose*.yml
 
 # Tests
 **/*_test.go
-internal/logtest/*
+internal/testutil/*
 internal/task/tasktest/*
+internal/auth/authtest/*
+internal/email/emailtest/*

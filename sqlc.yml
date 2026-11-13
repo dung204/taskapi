@@ -39,6 +39,13 @@ sql:
               type: "time.Time"
               pointer: true
 
+          - db_type: "text"
+            nullable: true
+            go_type:
+              type: "string"
+              pointer: true
+
+
           # UUID -> the standard library uuid package.
           # Check early that pgx can scan into this type (see the notes).
           - db_type: "uuid"
@@ -51,3 +58,13 @@ sql:
             go_type:
               import: "github.com/dung204/taskapi/internal/task"
               type: "Status"
+
+          - column: "user_tokens.purpose"
+            go_type:
+              import: "github.com/dung204/taskapi/internal/auth"
+              type: "TokenPurpose"
+
+          - column: "email_outbox.kind"
+            go_type:
+              import: "github.com/dung204/taskapi/internal/email"
+              type: "Kind"

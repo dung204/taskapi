@@ -33,5 +33,5 @@
   },
   "yaml.disableSchemaDetection": [
     "**/grafana/provisioning/datasources/prometheus.yml"
-  ]
+  ],
 }

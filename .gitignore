@@ -40,3 +40,7 @@ cmd/server/__debug*
 
 # Logs
 *.log
+
+# Keys
+*.key
+*.pub

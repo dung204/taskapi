@@ -15,11 +15,13 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/dung204/taskapi/internal/apperr"
+	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/httpapi/oapigen"
-	"github.com/dung204/taskapi/internal/logtest"
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/task/tasktest"
+	"github.com/dung204/taskapi/internal/testutil/logtest"
 )
 
 var validID = uuid.MustParse("01a142e5-6a3e-7218-9722-c0215445fae0")
@@ -777,7 +779,7 @@ func TestHandleStoreError(t *testing.T) {
 		{"delete", http.MethodDelete, "/tasks/" + validID.String(), nil},
 	}
 
-	errUnavailable := fmt.Errorf("get task: %w", task.ErrServiceUnavailable)
+	errUnavailable := fmt.Errorf("get task: %w", apperr.ErrServiceUnavailable)
 	errGeneric := errors.New("oops")
 
 	errCases := []struct {
@@ -795,14 +797,36 @@ func TestHandleStoreError(t *testing.T) {
 			wantStatusCode:  http.StatusInternalServerError,
 			wantErrContains: []string{"internal"},
 			wantHidden:      []string{"oops"},
-			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errGeneric}}},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "unexpected error", Attrs: map[string]any{"error": errGeneric}}},
+		},
+		{
+			name:            "not found",
+			err:             apperr.ErrNotFound,
+			wantStatusCode:  http.StatusNotFound,
+			wantErrContains: []string{"not found"},
+		},
+		{
+			name:            "wrapped not found",
+			err:             fmt.Errorf("get thing: %w", apperr.ErrNotFound),
+			wantStatusCode:  http.StatusNotFound,
+			wantErrContains: []string{"not found"},
+		},
+		{
+			// auth.ErrSessionNotFound is for the auth service's own logic and
+			// deliberately does not wrap apperr.ErrNotFound, so it must not become a 404.
+			name:            "auth session not found is not a 404",
+			err:             auth.ErrSessionNotFound,
+			wantStatusCode:  http.StatusInternalServerError,
+			wantErrContains: []string{"internal"},
+			wantHidden:      []string{"session not found"},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "unexpected error", Attrs: map[string]any{"error": auth.ErrSessionNotFound}}},
 		},
 		{
 			name:            "service unavailable",
-			err:             task.ErrServiceUnavailable,
+			err:             apperr.ErrServiceUnavailable,
 			wantStatusCode:  http.StatusServiceUnavailable,
 			wantErrContains: []string{"service unavailable"},
-			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": task.ErrServiceUnavailable}}},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "unexpected error", Attrs: map[string]any{"error": apperr.ErrServiceUnavailable}}},
 		},
 		{
 			name:            "wrapped service unavailable",
@@ -810,7 +834,7 @@ func TestHandleStoreError(t *testing.T) {
 			wantStatusCode:  http.StatusServiceUnavailable,
 			wantErrContains: []string{"service unavailable"},
 			wantHidden:      []string{"get task"},
-			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "store error", Attrs: map[string]any{"error": errUnavailable}}},
+			wantLogs:        []logtest.Entry{{Level: slog.LevelError, Msg: "unexpected error", Attrs: map[string]any{"error": errUnavailable}}},
 		},
 		{
 			name:            "deadline exceeded",

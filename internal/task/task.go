@@ -10,6 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 	"uuid"
+
+	"github.com/dung204/taskapi/internal/apperr"
 )
 
 type Status string
@@ -45,34 +47,37 @@ type Task struct {
 	DueAt       *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	OwnerID     uuid.UUID
 }
 
 type NewParams struct {
 	Title       string
+	OwnerID     uuid.UUID
 	Description *string
 	Status      Status
 	DueAt       *time.Time
 }
 
-func New(params NewParams, now time.Time) (*Task, error) {
+func New(p NewParams, now time.Time) (Task, error) {
 	id := uuid.NewV7()
 	nowUTC := now.UTC().Truncate(time.Microsecond)
-	status := cmp.Or(params.Status, StatusTodo)
+	status := cmp.Or(p.Status, StatusTodo)
 
-	task := &Task{
+	task := Task{
 		ID:        id,
+		OwnerID:   p.OwnerID,
 		CreatedAt: nowUTC,
 	}
 
 	err := task.Patch(Patch{
-		Title:       &params.Title,
-		Description: params.Description,
+		Title:       &p.Title,
+		Description: p.Description,
 		Status:      &status,
-		DueAt:       params.DueAt,
+		DueAt:       p.DueAt,
 	}, now)
 
 	if err != nil {
-		return nil, err
+		return Task{}, err
 	}
 
 	// Since this is to create new instance of task -> CreatedAt = UpdatedAt
@@ -91,7 +96,7 @@ func (t *Task) Patch(p Patch, now time.Time) error {
 		trimmed := strings.TrimSpace(*title)
 		length := utf8.RuneCountInString(trimmed)
 		if length < 1 || length > 200 {
-			return fmt.Errorf("%w: title must have at least 1 and at most 200 characters", ErrInvalidInput)
+			return fmt.Errorf("%w: title must have at least 1 and at most 200 characters", apperr.ErrInvalidInput)
 		}
 
 		if next.Title != trimmed {
@@ -103,7 +108,7 @@ func (t *Task) Patch(p Patch, now time.Time) error {
 	description := p.Description
 	if description != nil {
 		if utf8.RuneCountInString(*description) > 2000 {
-			return fmt.Errorf("%w: description must have at most 2000 characters", ErrInvalidInput)
+			return fmt.Errorf("%w: description must have at most 2000 characters", apperr.ErrInvalidInput)
 		}
 
 		if next.Description != *description {

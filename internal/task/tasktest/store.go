@@ -39,7 +39,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			t.Fatalf("task.New: %v", err)
 		}
 
-		created, err := s.Create(context.Background(), *nt)
+		created, err := s.Create(context.Background(), nt)
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}

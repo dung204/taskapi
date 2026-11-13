@@ -11,6 +11,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -32,26 +33,80 @@ services:
         condition: service_healthy
     restart: "no"
 
+  keygen:
+    build:
+      context: .
+      target: keygen
+    command: ["-dir", "/app/keys"]
+    volumes:
+      - jwt-keys:/app/keys
+    restart: "no"
+
   api:
     build:
       context: .
       target: server
     environment:
       PORT: "8080"
-      STORE: postgres
+      TASKS_STORE: postgres
       DATABASE_URL: postgres://${POSTGRES_USER:-taskapi}:${POSTGRES_PASSWORD:-taskapi}@db:5432/${POSTGRES_DB:-taskapi}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD:-taskapi}@redis:6379/0
       LOG_FORMAT: json
       PPROF_ADDR: ":6060"
       OPS_ADDR: ":9091"
       CORS_ALLOWED_ORIGINS: "*" # replace this to the frontend origin if available
+      CORS_MAX_AGE: 10m
+      JWT_PRIVATE_KEY_PATH: /app/keys/jwt_ed25519.key
+      JWT_PUBLIC_KEY_PATH: /app/keys/jwt_ed25519.pub
+      JWT_ISSUER: taskapi
+      JWT_AUDIENCES: taskapi-clients
+      ACCESS_TTL: 10m
+      REFRESH_TTL: 720h
+      REFRESH_GRACE_PERIOD: 15s
+      ARGON2_TIME: 3
+      ARGON2_MEMORY_KIB: 65536
+      ARGON2_THREADS: 4
+      ARGON2_CONCURRENCY: 2
+      LOGIN_FREE_ATTEMPTS: 4
+      LOGIN_BACKOFF: 30s,1m,5m,15m
+      LOGIN_WINDOW: 1h
+      MAIL_REQUEST_COOLDOWN: 60s
+      MAIL_REQUEST_HOURLY_MAX: 5
+      APP_BASE_URL: http://localhost:5173 # replace this to the frontend origin if available
+      VERIFY_EMAIL_TOKEN_TTL: 24h
+      RESET_PASSWORD_TOKEN_TTL: 1h
+      OUTBOX_LEASE: 5m
+      OUTBOX_BATCH_SIZE: 5
+      OUTBOX_SEND_TIMEOUT: 30s
+      OUTBOX_POLL_INTERVAL: 30s
+      OUTBOX_MAX_ATTEMPTS: 6
+      OUTBOX_RETRY_BASE: 1m
+      OUTBOX_RETRY_CAP: 15m
+      OUTBOX_SENT_RETENTION: 168h
+      CLEANUP_INTERVAL: 1h
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_TLS_MODE: none # mailpit has no TLS configured; for development only
+      SMTP_TIMEOUT: 10s
+      SMTP_USERNAME: ${SMTP_USERNAME:-taskapi}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-taskapi}
+      SMTP_FROM: Task API <taskapi@no-reply.com>
     ports:
       - "8080:8080"
       - "127.0.0.1:6060:6060"
+    volumes:
+      - jwt-keys:/app/keys:ro
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      keygen:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/server", "healthcheck"]
@@ -97,7 +152,39 @@ services:
       retries: 10
       start_period: 5s
 
+  redis:
+    image: redis:7.4.12-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: redis-server --requirepass "${REDIS_PASSWORD:-taskapi}"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'auth ${REDIS_PASSWORD:-taskapi}\nping' | redis-cli | grep PONG"]
+      start_period: 3s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_AUTH_ALLOW_INSECURE: true # for development only
+      MP_SMTP_AUTH: "${SMTP_USERNAME:-taskapi}:${SMTP_PASSWORD:-taskapi}"
+    volumes:
+      - mailpit-data:/data
+    restart: unless-stopped
+
 volumes:
   pgdata:
   prometheus-data:
   grafana-data:
+  redis-data:
+  mailpit-data:
+  jwt-keys:
