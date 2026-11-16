@@ -60,12 +60,12 @@ func (s *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 // Get implements [task.Store].
-func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (s *TaskStore) Get(ctx context.Context, viewer, id uuid.UUID) (task.Task, error) {
 	formatError := func(err error) error {
 		return formatPostgresError("get", "task", id.String(), err)
 	}
 
-	row, err := s.q.GetTask(ctx, id)
+	row, err := s.q.GetTask(ctx, sqlcgen.GetTaskParams{ID: id, OwnerID: viewer})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return task.Task{}, task.ErrNotFound
 	}
@@ -78,7 +78,7 @@ func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
 }
 
 // List implements [task.Store].
-func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
+func (s *TaskStore) List(ctx context.Context, viewer uuid.UUID, f task.ListFilter) ([]task.Task, error) {
 	formatError := func(err error) error {
 		return formatPostgresError("list", "task", "", err)
 	}
@@ -88,11 +88,11 @@ func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, e
 
 	if f.Status == "" {
 		rows, err = s.q.ListTasks(ctx, sqlcgen.ListTasksParams{
-			Limit: int32(f.Limit), Offset: int32(f.Offset),
+			Limit: int32(f.Limit), Offset: int32(f.Offset), Viewer: viewer,
 		})
 	} else {
 		rows, err = s.q.ListTasksByStatus(ctx, sqlcgen.ListTasksByStatusParams{
-			Status: f.Status, Limit: int32(f.Limit), Offset: int32(f.Offset),
+			Status: f.Status, Limit: int32(f.Limit), Offset: int32(f.Offset), Viewer: viewer,
 		})
 	}
 	if err != nil {

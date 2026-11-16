@@ -2,15 +2,16 @@ package memory
 
 import (
 	"testing"
+	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/task/tasktest"
 )
 
 func TestTaskStore(t *testing.T) {
-	tasktest.TestStore(t, func(t *testing.T) task.Store {
+	tasktest.TestStore(t, func(t *testing.T) (task.Store, func() uuid.UUID) {
 		t.Helper()
-		return NewTaskStore()
+		return NewTaskStore(), uuid.NewV7
 	})
 }
 

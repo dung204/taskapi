@@ -47,6 +47,10 @@ func newAuthenticatedHandler(t *testing.T, store task.Store, logger *slog.Logger
 // empty revocation list. The task endpoints need a bearer token, so requests
 // that carry no Authorization header get a valid one; the auth rules
 // themselves are tested through setupAuthTest.
+// testUserID is the user that the task tests authenticate as; tasks seeded for
+// them must be owned by it.
+var testUserID = uuid.MustParse("01a142fd-186e-7169-95c2-a186f9103a98")
+
 func withTestAuth(t *testing.T, deps HandlerDeps) http.Handler {
 	t.Helper()
 
@@ -56,7 +60,7 @@ func withTestAuth(t *testing.T, deps HandlerDeps) http.Handler {
 		Issuer: "taskapi-test", Audiences: []string{"taskapi-test"}, TTL: time.Hour,
 	})
 
-	token, _, err := jwtService.Issue(uuid.NewV7(), uuid.NewV7(), time.Now())
+	token, _, err := jwtService.Issue(testUserID, uuid.NewV7(), time.Now())
 	if err != nil {
 		t.Fatalf("issue test token: %v", err)
 	}

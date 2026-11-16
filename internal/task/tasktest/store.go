@@ -27,14 +27,34 @@ func checkTasks(t *testing.T, got, want []task.Task) {
 	}
 }
 
-func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
+// TestStore runs the behaviour suite. newStoreOwners also returns a function that
+// provides a fresh owner ID on each call, because tasks belong to users and a
+// real database enforces that with a foreign key.
+func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func() uuid.UUID)) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	// seed creates a task through the store with the given status and due date.
-	seed := func(t *testing.T, s task.Store, status task.Status, dueAt *time.Time) task.Task {
+	// newStore returns an empty store and sets owner to a fresh owner ID, the
+	// viewer for every test that does not care about ownership. newOwner
+	// provides further owners. Subtests run sequentially, so sharing these is safe.
+	var (
+		owner    uuid.UUID
+		newOwner func() uuid.UUID
+	)
+	newStore := func(t *testing.T) task.Store {
 		t.Helper()
 
-		nt, err := task.New(task.NewParams{Title: "seed", Status: status, DueAt: dueAt}, base)
+		s, no := newStoreOwners(t)
+		newOwner = no
+		owner = no()
+
+		return s
+	}
+
+	// seedFor creates a task owned by ownerID with the given status and due date.
+	seedFor := func(t *testing.T, s task.Store, ownerID uuid.UUID, status task.Status, dueAt *time.Time) task.Task {
+		t.Helper()
+
+		nt, err := task.New(task.NewParams{Title: "seed", OwnerID: ownerID, Status: status, DueAt: dueAt}, base)
 		if err != nil {
 			t.Fatalf("task.New: %v", err)
 		}
@@ -47,6 +67,12 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 		return created
 	}
 
+	// seed creates a task owned by owner.
+	seed := func(t *testing.T, s task.Store, status task.Status, dueAt *time.Time) task.Task {
+		t.Helper()
+		return seedFor(t, s, owner, status, dueAt)
+	}
+
 	// newestFirst sorts tasks by ID descending, which is the order List must return.
 	newestFirst := func(tasks []task.Task) []task.Task {
 		sorted := slices.Clone(tasks)
@@ -57,7 +83,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 	t.Run("Get returns ErrNotFound for unknown id", func(t *testing.T) {
 		s := newStore(t)
 
-		_, err := s.Get(context.Background(), uuid.NewV7())
+		_, err := s.Get(context.Background(), owner, uuid.NewV7())
 		if !errors.Is(err, task.ErrNotFound) {
 			t.Errorf("err = %v, want %v", err, task.ErrNotFound)
 		}
@@ -90,7 +116,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			t.Fatalf("Delete: %v", err)
 		}
 
-		_, err := s.Get(context.Background(), created.ID)
+		_, err := s.Get(context.Background(), owner, created.ID)
 		if !errors.Is(err, task.ErrNotFound) {
 			t.Errorf("Get after Delete: err = %v, want %v", err, task.ErrNotFound)
 		}
@@ -104,7 +130,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			all = append(all, seed(t, s, task.StatusTodo, nil))
 		}
 
-		got, err := s.List(context.Background(), task.ListFilter{Limit: 10})
+		got, err := s.List(context.Background(), owner, task.ListFilter{Limit: 10})
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -134,7 +160,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				got, err := s.List(context.Background(), tt.filter)
+				got, err := s.List(context.Background(), owner, tt.filter)
 				if err != nil {
 					t.Fatalf("List: %v", err)
 				}
@@ -153,13 +179,13 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 		seed(t, s, task.StatusDone, nil)
 		doing = append(doing, seed(t, s, task.StatusDoing, nil))
 
-		got, err := s.List(context.Background(), task.ListFilter{Limit: 10, Status: task.StatusDoing})
+		got, err := s.List(context.Background(), owner, task.ListFilter{Limit: 10, Status: task.StatusDoing})
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
 		checkTasks(t, got, newestFirst(doing))
 
-		got, err = s.List(context.Background(), task.ListFilter{Limit: 10, Status: task.StatusOverdue})
+		got, err = s.List(context.Background(), owner, task.ListFilter{Limit: 10, Status: task.StatusOverdue})
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -179,7 +205,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			t.Errorf("count = %d, want 0", n)
 		}
 
-		got, err := s.Get(context.Background(), done.ID)
+		got, err := s.Get(context.Background(), owner, done.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -200,7 +226,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			t.Errorf("count = %d, want 1", n)
 		}
 
-		got, err := s.Get(context.Background(), created.ID)
+		got, err := s.Get(context.Background(), owner, created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -232,7 +258,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			t.Errorf("count = %d, want 0", n)
 		}
 
-		got, err := s.Get(context.Background(), created.ID)
+		got, err := s.Get(context.Background(), owner, created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -273,7 +299,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 			t.Errorf("Update: %v", err)
 		}
 
-		got, err := s.Get(context.Background(), created.ID)
+		got, err := s.Get(context.Background(), owner, created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -287,11 +313,53 @@ func TestStore(t *testing.T, newStore func(t *testing.T) task.Store) {
 		CheckTask(t, got, want, cmpopts.IgnoreFields(task.Task{}, "UpdatedAt"))
 	})
 
+	t.Run("Get hides tasks owned by someone else", func(t *testing.T) {
+		s := newStore(t)
+		created := seed(t, s, task.StatusTodo, nil)
+
+		_, err := s.Get(context.Background(), newOwner(), created.ID)
+		if !errors.Is(err, task.ErrNotFound) {
+			t.Errorf("err = %v, want %v", err, task.ErrNotFound)
+		}
+	})
+
+	t.Run("List only returns the viewer's tasks", func(t *testing.T) {
+		s := newStore(t)
+		other := newOwner()
+
+		mine := []task.Task{
+			seed(t, s, task.StatusTodo, nil),
+			seed(t, s, task.StatusDoing, nil),
+		}
+		seedFor(t, s, other, task.StatusTodo, nil)
+		seedFor(t, s, other, task.StatusDoing, nil)
+
+		tests := []struct {
+			name   string
+			filter task.ListFilter
+			want   []task.Task
+		}{
+			{"no status", task.ListFilter{Limit: 10}, newestFirst(mine)},
+			{"with status", task.ListFilter{Limit: 10, Status: task.StatusDoing}, mine[1:]},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := s.List(context.Background(), owner, tt.filter)
+				if err != nil {
+					t.Fatalf("List: %v", err)
+				}
+
+				checkTasks(t, got, tt.want)
+			})
+		}
+	})
+
 	t.Run("create then get again", func(t *testing.T) {
 		s := newStore(t)
 		created := seed(t, s, task.StatusTodo, nil)
 
-		got, err := s.Get(context.Background(), created.ID)
+		got, err := s.Get(context.Background(), owner, created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}

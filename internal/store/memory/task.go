@@ -55,7 +55,7 @@ func (s *TaskStore) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 // Get implements [task.Store].
-func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (s *TaskStore) Get(ctx context.Context, viewer uuid.UUID, id uuid.UUID) (task.Task, error) {
 	if ctx.Err() != nil {
 		return task.Task{}, ctx.Err()
 	}
@@ -65,7 +65,7 @@ func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
 
 	t, found := s.tasks[id]
 
-	if !found {
+	if !found || t.OwnerID != viewer {
 		return task.Task{}, task.ErrNotFound
 	}
 
@@ -73,7 +73,7 @@ func (s *TaskStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
 }
 
 // List implements [task.Store].
-func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
+func (s *TaskStore) List(ctx context.Context, viewer uuid.UUID, f task.ListFilter) ([]task.Task, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -84,7 +84,7 @@ func (s *TaskStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, e
 	result := make([]task.Task, 0)
 
 	for _, t := range s.tasks {
-		if f.Status != "" && t.Status != f.Status {
+		if t.OwnerID != viewer || (f.Status != "" && t.Status != f.Status) {
 			continue
 		}
 

@@ -5,7 +5,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 -- name: GetTask :one
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
-WHERE id = $1;
+WHERE id = $1 AND owner_id = $2;
 
 -- name: GetTaskForUpdate :one
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
@@ -16,13 +16,14 @@ FOR UPDATE;
 -- name: ListTasks :many
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
+WHERE owner_id = sqlc.arg('viewer')
 ORDER BY id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: ListTasksByStatus :many
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
-WHERE status = sqlc.arg('status')
+WHERE status = sqlc.arg('status') AND owner_id = sqlc.arg('viewer')
 ORDER BY id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 

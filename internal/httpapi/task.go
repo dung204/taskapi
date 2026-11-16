@@ -31,6 +31,8 @@ func (h *taskHandler) CreateTask(ctx context.Context, request oapigen.CreateTask
 		return nil, err
 	}
 
+	p.OwnerID = identityFrom(ctx).UserID
+
 	t, err := task.New(p, time.Now())
 	if errors.Is(err, apperr.ErrInvalidInput) {
 		return oapigen.CreateTask400JSONResponse{Error: err.Error()}, nil
@@ -64,7 +66,7 @@ func (h *taskHandler) ListTasks(ctx context.Context, request oapigen.ListTasksRe
 		return nil, err
 	}
 
-	ts, err := h.store.List(dbCtx, f)
+	ts, err := h.store.List(dbCtx, identityFrom(ctx).UserID, f)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +78,7 @@ func (h *taskHandler) GetTask(ctx context.Context, request oapigen.GetTaskReques
 	dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
 	defer cancel()
 
-	t, err := h.store.Get(dbCtx, request.Id)
+	t, err := h.store.Get(dbCtx, identityFrom(ctx).UserID, request.Id)
 	if errors.Is(err, task.ErrNotFound) {
 		return oapigen.GetTask404JSONResponse{Error: err.Error()}, nil
 	}

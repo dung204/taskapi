@@ -59,11 +59,16 @@ func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) (int64, error) {
 const getTask = `-- name: GetTask :one
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
-WHERE id = $1
+WHERE id = $1 AND owner_id = $2
 `
 
-func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (Task, error) {
-	row := q.db.QueryRow(ctx, getTask, id)
+type GetTaskParams struct {
+	ID      uuid.UUID
+	OwnerID uuid.UUID
+}
+
+func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) {
+	row := q.db.QueryRow(ctx, getTask, arg.ID, arg.OwnerID)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -104,17 +109,19 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 const listTasks = `-- name: ListTasks :many
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
+WHERE owner_id = $1
 ORDER BY id DESC
-LIMIT $2 OFFSET $1
+LIMIT $3 OFFSET $2
 `
 
 type ListTasksParams struct {
+	Viewer uuid.UUID
 	Offset int32
 	Limit  int32
 }
 
 func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasks, arg.Offset, arg.Limit)
+	rows, err := q.db.Query(ctx, listTasks, arg.Viewer, arg.Offset, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -145,19 +152,25 @@ func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]Task, e
 const listTasksByStatus = `-- name: ListTasksByStatus :many
 SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
 FROM tasks
-WHERE status = $1
+WHERE status = $1 AND owner_id = $2
 ORDER BY id DESC
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListTasksByStatusParams struct {
 	Status task.Status
+	Viewer uuid.UUID
 	Offset int32
 	Limit  int32
 }
 
 func (q *Queries) ListTasksByStatus(ctx context.Context, arg ListTasksByStatusParams) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasksByStatus, arg.Status, arg.Offset, arg.Limit)
+	rows, err := q.db.Query(ctx, listTasksByStatus,
+		arg.Status,
+		arg.Viewer,
+		arg.Offset,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

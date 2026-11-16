@@ -21,7 +21,7 @@ type panicStore struct {
 	task.Store
 }
 
-func (s panicStore) Get(context.Context, uuid.UUID) (task.Task, error) {
+func (s panicStore) Get(context.Context, uuid.UUID, uuid.UUID) (task.Task, error) {
 	panic("boom")
 }
 

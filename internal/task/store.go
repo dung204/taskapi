@@ -21,8 +21,8 @@ type Patch struct {
 
 type Store interface {
 	Create(ctx context.Context, t Task) (Task, error)
-	Get(ctx context.Context, id uuid.UUID) (Task, error)
-	List(ctx context.Context, f ListFilter) ([]Task, error)
+	Get(ctx context.Context, viewer, id uuid.UUID) (Task, error)
+	List(ctx context.Context, viewer uuid.UUID, f ListFilter) ([]Task, error)
 	Update(ctx context.Context, id uuid.UUID, p Patch) (Task, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	MarkOverdue(ctx context.Context, now time.Time) (int64, error)

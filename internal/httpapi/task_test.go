@@ -30,6 +30,7 @@ var notFoundID = uuid.MustParse("01a142fd-186e-7169-95c2-a186f9103a97")
 func defaultTask() task.Task {
 	return task.Task{
 		ID:          validID,
+		OwnerID:     testUserID,
 		Title:       "title",
 		Description: "description",
 		Status:      task.StatusDoing,
@@ -135,7 +136,7 @@ type mockCaptureListStore struct {
 	tasks []task.Task
 }
 
-func (s *mockCaptureListStore) List(_ context.Context, f task.ListFilter) ([]task.Task, error) {
+func (s *mockCaptureListStore) List(_ context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Task, error) {
 	s.got = f
 	return s.tasks, nil
 }
@@ -291,9 +292,10 @@ func seedTasks(t *testing.T, s task.Store, n int) {
 			status = task.StatusDone
 		}
 		_, err := s.Create(t.Context(), task.Task{
-			ID:     testID(i),
-			Title:  fmt.Sprintf("task %d", i),
-			Status: status,
+			ID:      testID(i),
+			OwnerID: testUserID,
+			Title:   fmt.Sprintf("task %d", i),
+			Status:  status,
 		})
 		if err != nil {
 			t.Fatalf("seed task %d: %v", i, err)
@@ -360,7 +362,7 @@ type mockGetOneStore struct {
 	found task.Task
 }
 
-func (s mockGetOneStore) Get(_ context.Context, id uuid.UUID) (task.Task, error) {
+func (s mockGetOneStore) Get(_ context.Context, _ uuid.UUID, id uuid.UUID) (task.Task, error) {
 	if id == s.found.ID {
 		return s.found, nil
 	}
@@ -727,7 +729,7 @@ func TestDeleteTask(t *testing.T) {
 			}
 
 			if res.StatusCode == http.StatusNoContent {
-				_, err := s.Get(t.Context(), uuid.MustParse(tt.id))
+				_, err := s.Get(t.Context(), testUserID, uuid.MustParse(tt.id))
 				if err == nil {
 					t.Fatal("task is still found, want not found after deletion")
 				}
@@ -755,11 +757,11 @@ func (s mockFailingStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.err
 }
 
-func (s mockFailingStore) Get(ctx context.Context, id uuid.UUID) (task.Task, error) {
+func (s mockFailingStore) Get(ctx context.Context, _ uuid.UUID, id uuid.UUID) (task.Task, error) {
 	return task.Task{}, s.err
 }
 
-func (s mockFailingStore) List(ctx context.Context, f task.ListFilter) ([]task.Task, error) {
+func (s mockFailingStore) List(ctx context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Task, error) {
 	return []task.Task{}, s.err
 }
 
