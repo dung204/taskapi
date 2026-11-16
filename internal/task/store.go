@@ -27,3 +27,7 @@ type Store interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	MarkOverdue(ctx context.Context, now time.Time) (int64, error)
 }
+
+type Transactor interface {
+	WithTx(ctx context.Context, fn func(Store) error) error
+}
