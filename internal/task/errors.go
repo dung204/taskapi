@@ -28,9 +28,9 @@ var (
 // Sharing: members and roles.
 var (
 	ErrMemberNotFound     = fmt.Errorf("member: %w", apperr.ErrNotFound)
-	ErrMemberExists       = fmt.Errorf("%w: member already exists", apperr.ErrConflict)
+	ErrMemberExists       = fmt.Errorf("%w: this person is already a member of the task", apperr.ErrConflict)
 	ErrNotTaskMember      = fmt.Errorf("%w: user is not owner or member of task", apperr.ErrForbidden)
-	ErrInvalidRole        = fmt.Errorf("%w: role must be one of the following: %s", apperr.ErrInvalidInput, strings.Join(grantableRoles, ", "))
+	ErrInvalidRole        = fmt.Errorf("%w: role must be one of the following: %s", apperr.ErrUnprocessable, strings.Join(grantableRoles, ", "))
 	ErrCannotManageShares = fmt.Errorf("%w: only the owner can manage who a task is shared with", apperr.ErrForbidden)
 	ErrMembersExceeded    = fmt.Errorf("%w: a task can have at most %d members", apperr.ErrUnprocessable, maxMembersPerTask)
 	ErrTaskFull           = fmt.Errorf("%w: the task has reached its member limit", apperr.ErrConflict)

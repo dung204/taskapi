@@ -1,4 +1,4 @@
-package tasktest
+package postgres
 
 import (
 	"fmt"
@@ -9,7 +9,8 @@ import (
 	"github.com/dung204/taskapi/internal/task"
 )
 
-func BenchmarkStore(b *testing.B, newStore func(tb testing.TB) task.Store) {
+func runStoreBenchmark(b *testing.B, newStore func(tb testing.TB) task.Store) {
+	b.Helper()
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	// The zero UUID is the legacy user that the migrations seed, so it satisfies

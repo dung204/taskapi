@@ -25,10 +25,10 @@ const (
 )
 
 var grantableRoles = []string{
-	string(RoleManager),
-	string(RoleEditor),
-	string(RoleContributor),
 	string(RoleViewer),
+	string(RoleContributor),
+	string(RoleEditor),
+	string(RoleManager),
 }
 
 var rolePerms = map[Role]Permission{

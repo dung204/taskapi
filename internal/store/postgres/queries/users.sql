@@ -41,4 +41,5 @@ WHERE id = sqlc.arg('id');
 SELECT id
 FROM users
 WHERE email = $1
-  AND email_verified_at IS NOT NULL;
+  AND email_verified_at IS NOT NULL
+  AND disabled_at IS NULL;

@@ -19,6 +19,7 @@ func preflightRequest(tb testing.TB, origin string) *http.Request {
 }
 
 func TestCorsMiddleware(t *testing.T) {
+	t.Parallel()
 	const origin = "https://app.example.com"
 
 	tests := []struct {

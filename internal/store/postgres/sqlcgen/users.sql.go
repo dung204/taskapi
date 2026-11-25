@@ -97,6 +97,7 @@ SELECT id
 FROM users
 WHERE email = $1
   AND email_verified_at IS NOT NULL
+  AND disabled_at IS NULL
 `
 
 func (q *Queries) GetVerifiedUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error) {

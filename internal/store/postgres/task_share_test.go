@@ -1,30 +1,22 @@
 package postgres
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/dung204/taskapi/internal/task/tasktest"
+	"github.com/dung204/taskapi/internal/testutil"
 )
 
 func TestInvitationStore(t *testing.T) {
-	url := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-	tasktest.TestInvitationStore(t, func(t *testing.T) tasktest.ShareDeps {
+	url := testutil.DatabaseURL(t)
+	runInvitationStoreSuite(t, func(t *testing.T) ShareDeps {
 		t.Helper()
 		return newShareDeps(t, url)
 	})
 }
 
 func TestMemberStore(t *testing.T) {
-	url := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
-	tasktest.TestMemberStore(t, func(t *testing.T) tasktest.ShareDeps {
+	url := testutil.DatabaseURL(t)
+	runMemberStoreSuite(t, func(t *testing.T) ShareDeps {
 		t.Helper()
 		return newShareDeps(t, url)
 	})

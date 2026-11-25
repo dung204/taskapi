@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"testing"
@@ -18,41 +19,30 @@ import (
 	"github.com/dung204/taskapi/internal/apperr"
 	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/httpapi/oapigen"
-	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/testutil/logtest"
 )
 
-var validID = uuid.MustParse("01a142e5-6a3e-7218-9722-c0215445fae0")
+// idValid in a table stands for the ID of the task the test seeded for the
+// caller; the tests use fresh IDs, so a table cannot hold them.
+const idValid = "valid"
+
 var notFoundID = uuid.MustParse("01a142fd-186e-7169-95c2-a186f9103a97")
 
-func defaultTask() task.Task {
-	return task.Task{
-		ID:          validID,
-		OwnerID:     testUserID,
-		Title:       "title",
-		Description: "description",
-		Status:      task.StatusDoing,
-		DueAt:       new(time.Date(2026, 10, 14, 9, 53, 50, 0, time.UTC).Truncate(time.Microsecond)),
-		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:   time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+// resolveID replaces idValid by the ID of tk.
+func resolveID(id string, tk task.Task) string {
+	if id == idValid {
+		return tk.ID.String()
 	}
+	return id
 }
 
-func taskWith(mod func(*task.Task)) task.Task {
-	t := defaultTask()
-	mod(&t)
-	return t
-}
-
-// ownerAccess is how the store shows t to its owner, the user the tests
-// authenticate as.
-func ownerAccess(t task.Task) task.Access {
-	return task.Access{Task: t, Role: task.RoleOwner}
-}
-
-func apiTaskWith(mod func(*task.Task)) oapigen.Task {
-	return oapigen.ToAPITask(ownerAccess(taskWith(mod)))
+// ownerAPITask is how the API shows tk, after mod, to its owner.
+func ownerAPITask(tk task.Task, mod func(*task.Task)) oapigen.Task {
+	if mod != nil {
+		mod(&tk)
+	}
+	return oapigen.ToAPITask(task.Access{Task: tk, Role: task.RoleOwner})
 }
 
 func checkAPITask(tb testing.TB, got, want oapigen.Task, opts ...cmp.Option) {
@@ -63,6 +53,7 @@ func checkAPITask(tb testing.TB, got, want oapigen.Task, opts ...cmp.Option) {
 }
 
 func TestCreateTask(t *testing.T) {
+	t.Parallel()
 	dueAt := time.Date(2026, 10, 14, 9, 53, 50, 0, time.UTC).Truncate(time.Microsecond)
 	dueAtStr := dueAt.Format(time.RFC3339)
 
@@ -87,7 +78,6 @@ func TestCreateTask(t *testing.T) {
 				Description: "Task description",
 				Status:      "todo",
 				DueAt:       &dueAt,
-				OwnerId:     testUserID,
 				Role:        task.RoleOwner,
 			},
 		},
@@ -114,7 +104,8 @@ func TestCreateTask(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, _, _ := setupTest(t)
+			t.Parallel()
+			h, e, _ := setupTest(t)
 			rec, req := prepareTestRequest(t, http.MethodPost, "/tasks", tt.body)
 			h.ServeHTTP(rec, req)
 
@@ -127,7 +118,10 @@ func TestCreateTask(t *testing.T) {
 
 			if tt.wantTask != nil {
 				got := decodeResponseBody[oapigen.Task](t, res.Body)
-				checkAPITask(t, got, *tt.wantTask, cmpopts.IgnoreFields(oapigen.Task{}, "Id", "CreatedAt", "UpdatedAt"))
+				checkAPITask(t, got, *tt.wantTask, cmpopts.IgnoreFields(oapigen.Task{}, "Id", "OwnerId", "CreatedAt", "UpdatedAt"))
+				if got.OwnerId != e.caller {
+					t.Errorf("owner = %v, want the caller %v", got.OwnerId, e.caller)
+				}
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -137,15 +131,15 @@ func TestCreateTask(t *testing.T) {
 	}
 }
 
-type mockCaptureListStore struct {
+// captureListStore records the filter and delegates to the real store.
+type captureListStore struct {
 	task.Store
-	got   task.ListFilter
-	tasks []task.Access
+	got task.ListFilter
 }
 
-func (s *mockCaptureListStore) List(_ context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Access, error) {
+func (s *captureListStore) List(ctx context.Context, viewer uuid.UUID, f task.ListFilter) ([]task.Access, error) {
 	s.got = f
-	return s.tasks, nil
+	return s.Store.List(ctx, viewer, f)
 }
 
 func defaultListFilter() task.ListFilter {
@@ -179,6 +173,7 @@ func checkListFilter(t *testing.T, got task.ListFilter, want task.ListFilter) {
 }
 
 func TestListTasks_Filter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		params          string
@@ -259,8 +254,10 @@ func TestListTasks_Filter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &mockCaptureListStore{}
-			h, _ := setupTestWithStore(t, store)
+			t.Parallel()
+			e := newEnv(t)
+			store := &captureListStore{Store: e.tasks}
+			h, _, _ := setupTestWith(t, e, store)
 			path := "/tasks" + tt.params
 			rec, req := prepareTestRequest(t, http.MethodGet, path, nil)
 			h.ServeHTTP(rec, req)
@@ -282,60 +279,61 @@ func TestListTasks_Filter(t *testing.T) {
 	}
 }
 
-func testID(n int) uuid.UUID {
-	return uuid.MustParse(fmt.Sprintf("00000000-0000-7000-8000-%012d", n))
-}
-
-func ids(n ...int) []uuid.UUID {
-	res := make([]uuid.UUID, 0)
-	for _, val := range n {
-		res = append(res, testID(val))
-	}
-	return res
-}
-
-func seedTasks(t *testing.T, s task.Store, n int) {
+// seedTasks stores n tasks for owner whose IDs sort in creation order, and
+// returns them (index 0 is the first). The IDs share a random prefix, so
+// tests of one package never collide.
+func seedTasks(t *testing.T, e *env, owner uuid.UUID, n int) []uuid.UUID {
 	t.Helper()
+	prefix := rand.Uint32()
+	ids := make([]uuid.UUID, 0, n)
 	for i := 1; i <= n; i++ {
 		status := task.StatusTodo
 		if i%2 == 0 {
 			status = task.StatusDone
 		}
-		_, err := s.Create(t.Context(), task.Task{
-			ID:      testID(i),
-			OwnerID: testUserID,
+		id := uuid.MustParse(fmt.Sprintf("%08x-0000-7000-8000-%012d", prefix, i))
+		_, err := e.tasks.Create(t.Context(), task.Task{
+			ID:      id,
+			OwnerID: owner,
 			Title:   fmt.Sprintf("task %d", i),
 			Status:  status,
 		})
 		if err != nil {
 			t.Fatalf("seed task %d: %v", i, err)
 		}
+		ids = append(ids, id)
 	}
+	return ids
 }
 
 func TestListTasks_Paging(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name    string
-		seed    int
-		query   string
-		wantIDs []uuid.UUID
+		name  string
+		seed  int
+		query string
+		want  []int // 1-based creation order of the tasks expected, in response order
 	}{
-		{"empty store", 0, "", nil},
-		{"default limit returns all", 5, "", ids(5, 4, 3, 2, 1)},
-		{"first page", 5, "?limit=2", ids(5, 4)},
-		{"second page", 5, "?limit=2&offset=2", ids(3, 2)},
-		{"last partial page", 5, "?limit=2&offset=4", ids(1)},
+		{"no tasks", 0, "", nil},
+		{"default limit returns all", 5, "", []int{5, 4, 3, 2, 1}},
+		{"first page", 5, "?limit=2", []int{5, 4}},
+		{"second page", 5, "?limit=2&offset=2", []int{3, 2}},
+		{"last partial page", 5, "?limit=2&offset=4", []int{1}},
 		{"offset equals count", 5, "?limit=2&offset=5", nil},
 		{"offset exceeds count", 5, "?limit=2&offset=100", nil},
-		{"limit exceeds count", 5, "?limit=10", ids(5, 4, 3, 2, 1)},
-		{"status filter then page", 5, "?status=done&limit=1&offset=1", ids(2)},
+		{"limit exceeds count", 5, "?limit=10", []int{5, 4, 3, 2, 1}},
+		{"status filter then page", 5, "?status=done&limit=1&offset=1", []int{2}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := memory.NewTaskStore()
-			seedTasks(t, store, tt.seed)
-			h, _ := setupTestWithStore(t, store)
+			t.Parallel()
+			h, e, _ := setupTest(t)
+			seeded := seedTasks(t, e, e.caller, tt.seed)
+			wantIDs := make([]uuid.UUID, 0, len(tt.want))
+			for _, n := range tt.want {
+				wantIDs = append(wantIDs, seeded[n-1])
+			}
 			path := "/tasks" + tt.query
 			rec, req := prepareTestRequest(t, http.MethodGet, path, nil)
 			h.ServeHTTP(rec, req)
@@ -351,7 +349,7 @@ func TestListTasks_Paging(t *testing.T) {
 
 			// An empty page must be encoded as [] rather than null:
 			// [] decodes to an empty non-nil slice, while null decodes to nil.
-			if len(tt.wantIDs) == 0 && gotTasks == nil {
+			if len(wantIDs) == 0 && gotTasks == nil {
 				t.Fatalf("body decoded to a nil slice, want an empty array [] (not null)")
 			}
 
@@ -360,32 +358,20 @@ func TestListTasks_Paging(t *testing.T) {
 				gotIDs = append(gotIDs, tsk.Id)
 			}
 
-			if !slices.Equal(gotIDs, tt.wantIDs) {
-				t.Errorf("ids = %v, want %v", gotIDs, tt.wantIDs)
+			if !slices.Equal(gotIDs, wantIDs) {
+				t.Errorf("ids = %v, want %v", gotIDs, wantIDs)
 			}
 		})
 	}
 }
 
-type mockGetOneStore struct {
-	task.Store
-	found task.Task
-}
-
-func (s mockGetOneStore) Get(_ context.Context, _ uuid.UUID, id uuid.UUID) (task.Access, error) {
-	if id == s.found.ID {
-		return ownerAccess(s.found), nil
-	}
-
-	return task.Access{}, task.ErrNotFound
-}
-
 func TestGetTask(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		id              string
 		wantStatusCode  int
-		wantTask        *oapigen.Task
+		wantTask        bool
 		wantErrContains []string
 	}{
 		{
@@ -402,16 +388,18 @@ func TestGetTask(t *testing.T) {
 		},
 		{
 			name:           "valid UUID and found",
-			id:             validID.String(),
+			id:             idValid,
 			wantStatusCode: http.StatusOK,
-			wantTask:       new(oapigen.ToAPITask(ownerAccess(defaultTask()))),
+			wantTask:       true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, _ := setupTestWithStore(t, mockGetOneStore{found: defaultTask()})
-			rec, req := prepareTestRequest(t, http.MethodGet, `/tasks/`+tt.id, nil)
+			t.Parallel()
+			h, e, _ := setupTest(t)
+			seeded := e.seedTask(t, e.caller, nil)
+			rec, req := prepareTestRequest(t, http.MethodGet, `/tasks/`+resolveID(tt.id, seeded), nil)
 			h.ServeHTTP(rec, req)
 
 			res := rec.Result()
@@ -421,8 +409,8 @@ func TestGetTask(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", res.StatusCode, tt.wantStatusCode)
 			}
 
-			if tt.wantTask != nil {
-				checkAPITask(t, decodeResponseBody[oapigen.Task](t, res.Body), *tt.wantTask)
+			if tt.wantTask {
+				checkAPITask(t, decodeResponseBody[oapigen.Task](t, res.Body), ownerAPITask(seeded, nil))
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -432,27 +420,15 @@ func TestGetTask(t *testing.T) {
 	}
 }
 
-type mockCaptureUpdateStore struct {
-	task.Store
-	called bool
-	got    task.Task
-}
-
-func (s *mockCaptureUpdateStore) Update(ctx context.Context, t task.Task) error {
-	s.called = true
-	s.got = t
-
-	return s.Store.Update(ctx, t)
-}
-
 func TestUpdateTask(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		id              string
 		body            string
 		wantStatusCode  int
-		wantCalled      bool
-		wantTask        *oapigen.Task
+		wantMod         func(*task.Task) // what the update changed
+		wantTask        bool
 		wantErrContains []string
 	}{
 		{
@@ -460,152 +436,139 @@ func TestUpdateTask(t *testing.T) {
 			id:              "abc",
 			body:            "{}",
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"invalid"},
 		},
 		{
 			name:            "empty body",
-			id:              validID.String(),
+			id:              idValid,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"required"},
 		},
 		{
 			name:            "malformed body",
-			id:              validID.String(),
+			id:              idValid,
 			body:            `{"title":"abc"`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"malformed"},
 		},
 		{
 			name:            "wrong field type",
-			id:              validID.String(),
+			id:              idValid,
 			body:            `{"title":123}`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"wrong type"},
 		},
 		{
 			name:            "non-object body",
-			id:              validID.String(),
+			id:              idValid,
 			body:            `[]`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"JSON object"},
 		},
 		{
 			name:            "invalid due_at",
-			id:              validID.String(),
+			id:              idValid,
 			body:            `{"due_at":"tomorrow"}`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"RFC3339"},
 		},
 		{
 			name:           "partial update",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"title":"new"}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Title = "new" })),
+			wantTask:       true,
+			wantMod:        func(t *task.Task) { t.Title = "new" },
 		},
 		{
 			name:           "set description to blank",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"description":""}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Description = "" })),
+			wantTask:       true,
+			wantMod:        func(t *task.Task) { t.Description = "" },
 		},
 		{
 			name:           "valid due_at in UTC",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"due_at":"2026-12-31T10:00:00Z"}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask: new(apiTaskWith(func(t *task.Task) {
+			wantTask:       true,
+			wantMod: func(t *task.Task) {
 				t.DueAt = new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))
-			})),
+			},
 		},
 		{
 			// 10:00 at +07:00 is 03:00 UTC
 			name:           "valid due_at with timezone offset",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"due_at":"2026-12-31T10:00:00+07:00"}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask: new(apiTaskWith(func(t *task.Task) {
+			wantTask:       true,
+			wantMod: func(t *task.Task) {
 				t.DueAt = new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))
-			})),
+			},
 		},
 		{
 			name:           "valid status todo",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"status":"todo"}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusTodo })),
+			wantTask:       true,
+			wantMod:        func(t *task.Task) { t.Status = task.StatusTodo },
 		},
 		{
 			name:           "valid status doing",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"status":"doing"}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusDoing })),
+			wantTask:       true,
+			wantMod:        func(t *task.Task) { t.Status = task.StatusDoing },
 		},
 		{
 			name:           "valid status done",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{"status":"done"}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusDone })),
+			wantTask:       true,
+			wantMod:        func(t *task.Task) { t.Status = task.StatusDone },
 		},
 		{
 			name:           "empty object leaves unchanged",
-			id:             validID.String(),
+			id:             idValid,
 			body:           `{}`,
 			wantStatusCode: http.StatusOK,
-			wantCalled:     true,
-			wantTask:       new(oapigen.ToAPITask(ownerAccess(defaultTask()))),
+			wantTask:       true,
 		},
 		{
 			name:            "valid id but not found",
 			id:              notFoundID.String(),
 			body:            `{}`,
 			wantStatusCode:  http.StatusNotFound,
-			wantCalled:      false,
 			wantErrContains: []string{"not found"},
 		},
 		{
 			name:            "invalid title",
-			id:              validID.String(),
+			id:              idValid,
 			body:            `{"title":""}`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"title", "at least 1", "at most 200", "characters"},
 		},
 		{
 			name:            "invalid status",
-			id:              validID.String(),
+			id:              idValid,
 			body:            `{"status":"bogus"}`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"status", "invalid"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &mockCaptureUpdateStore{Store: memory.NewTaskStore()}
-			_, err := s.Create(t.Context(), defaultTask())
-			if err != nil {
-				t.Fatalf("can not seed task for update test: %v", err)
-			}
-			h, _ := setupTestWithStore(t, s)
-			rec, req := prepareTestRequest(t, http.MethodPatch, "/tasks/"+tt.id, tt.body)
+			t.Parallel()
+			h, e, _ := setupTest(t)
+			seeded := e.seedTask(t, e.caller, nil)
+			rec, req := prepareTestRequest(t, http.MethodPatch, "/tasks/"+resolveID(tt.id, seeded), tt.body)
 			h.ServeHTTP(rec, req)
 
 			res := rec.Result()
@@ -615,15 +578,22 @@ func TestUpdateTask(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", res.StatusCode, tt.wantStatusCode)
 			}
 
-			if s.called != tt.wantCalled {
-				t.Fatalf("called = %t, want %t", s.called, tt.wantCalled)
-			}
-
-			if tt.wantTask != nil {
+			if tt.wantTask {
 				gotTask := decodeResponseBody[oapigen.Task](t, res.Body)
 				// We don't focus on the UpdatedAt field here
 				// since it's in a separate suite for Patch() method of Task
-				checkAPITask(t, gotTask, *tt.wantTask, cmpopts.IgnoreFields(oapigen.Task{}, "UpdatedAt"))
+				checkAPITask(t, gotTask, ownerAPITask(seeded, tt.wantMod), cmpopts.IgnoreFields(oapigen.Task{}, "UpdatedAt"))
+			}
+
+			// A rejected request must leave the stored task alone.
+			if tt.wantStatusCode >= 400 {
+				stored, err := e.tasks.Get(t.Context(), e.caller, seeded.ID)
+				if err != nil {
+					t.Fatalf("get stored task: %v", err)
+				}
+				if diff := cmp.Diff(seeded, stored.Task); diff != "" {
+					t.Errorf("task changed by a rejected request (-seeded +stored):\n%s", diff)
+				}
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -633,60 +603,39 @@ func TestUpdateTask(t *testing.T) {
 	}
 }
 
-type mockCaptureDeleteStore struct {
-	task.Store
-	called bool
-	gotID  uuid.UUID
-}
-
-func (s *mockCaptureDeleteStore) Delete(ctx context.Context, id uuid.UUID) error {
-	s.called = true
-	s.gotID = id
-
-	return s.Store.Delete(ctx, id)
-}
-
 func TestDeleteTask(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		id              string
 		wantStatusCode  int
-		wantCalled      bool
-		wantID          uuid.UUID
 		wantErrContains []string
 	}{
 		{
 			name:            "invalid ID",
 			id:              "abc",
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      false,
 			wantErrContains: []string{"invalid"},
 		},
 		{
 			name:            "valid ID but not found",
 			id:              notFoundID.String(),
 			wantStatusCode:  http.StatusNotFound,
-			wantCalled:      false,
 			wantErrContains: []string{"not found"},
 		},
 		{
 			name:           "success",
-			id:             validID.String(),
+			id:             idValid,
 			wantStatusCode: http.StatusNoContent,
-			wantCalled:     true,
-			wantID:         validID,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &mockCaptureDeleteStore{Store: memory.NewTaskStore()}
-			_, err := s.Create(t.Context(), defaultTask())
-			if err != nil {
-				t.Fatalf("can not seed task for delete test: %v", err)
-			}
-			h, _ := setupTestWithStore(t, s)
-			rec, req := prepareTestRequest(t, http.MethodDelete, "/tasks/"+tt.id, nil)
+			t.Parallel()
+			h, e, _ := setupTest(t)
+			seeded := e.seedTask(t, e.caller, nil)
+			rec, req := prepareTestRequest(t, http.MethodDelete, "/tasks/"+resolveID(tt.id, seeded), nil)
 			h.ServeHTTP(rec, req)
 
 			res := rec.Result()
@@ -696,21 +645,13 @@ func TestDeleteTask(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", res.StatusCode, tt.wantStatusCode)
 			}
 
-			if s.called != tt.wantCalled {
-				t.Fatalf("called = %t, want %t", s.called, tt.wantCalled)
-			}
-
-			if s.gotID != tt.wantID {
-				t.Fatalf("ID = %v, want %v", s.gotID, tt.wantID)
-			}
-
+			_, err := e.tasks.Get(t.Context(), e.caller, seeded.ID)
 			if res.StatusCode == http.StatusNoContent {
-				_, err := s.Get(t.Context(), testUserID, uuid.MustParse(tt.id))
-				if err == nil {
-					t.Fatal("task is still found, want not found after deletion")
+				if !errors.Is(err, task.ErrNotFound) {
+					t.Fatalf("Get after deletion = %v, want ErrNotFound", err)
 				}
-				// Other errors won't be handled here
-				// since they are tested in the TestGetOne()
+			} else if err != nil {
+				t.Fatalf("a rejected request must keep the task: %v", err)
 			}
 
 			if res.StatusCode >= 400 {
@@ -720,33 +661,8 @@ func TestDeleteTask(t *testing.T) {
 	}
 }
 
-// mockRoleStore shows every task to the caller with role, and records writes.
-type mockRoleStore struct {
-	task.Store
-	role    task.Role
-	updated bool
-	deleted bool
-}
-
-func (s *mockRoleStore) Get(context.Context, uuid.UUID, uuid.UUID) (task.Access, error) {
-	return task.Access{Task: defaultTask(), Role: s.role}, nil
-}
-
-func (s *mockRoleStore) GetForUpdate(context.Context, uuid.UUID) (task.Task, error) {
-	return defaultTask(), nil
-}
-
-func (s *mockRoleStore) Update(context.Context, task.Task) error {
-	s.updated = true
-	return nil
-}
-
-func (s *mockRoleStore) Delete(context.Context, uuid.UUID) error {
-	s.deleted = true
-	return nil
-}
-
 func TestTaskRolePermissions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		role            task.Role
@@ -799,9 +715,17 @@ func TestTaskRolePermissions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &mockRoleStore{role: tt.role}
-			h, _ := setupTestWithStore(t, s)
-			rec, req := prepareTestRequest(t, tt.method, "/tasks/"+validID.String(), tt.body)
+			t.Parallel()
+			e := newEnv(t)
+			owner := e.newUser(t)
+			seeded := e.seedTask(t, owner.ID, nil)
+			caller := owner
+			if tt.role != task.RoleOwner {
+				caller = e.newUser(t)
+				e.addMember(t, seeded.ID, caller.ID, caller.Email, tt.role)
+			}
+			h := withTestAuthAs(t, caller.ID, HandlerDeps{Tasks: e.service(nil), Logger: slog.New(slog.DiscardHandler)})
+			rec, req := prepareTestRequest(t, tt.method, "/tasks/"+seeded.ID.String(), tt.body)
 			h.ServeHTTP(rec, req)
 
 			res := rec.Result()
@@ -811,8 +735,13 @@ func TestTaskRolePermissions(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", res.StatusCode, tt.wantStatusCode)
 			}
 
-			if written := s.updated || s.deleted; written != tt.wantWritten {
-				t.Errorf("store written = %t, want %t", written, tt.wantWritten)
+			stored, err := e.tasks.Get(t.Context(), owner.ID, seeded.ID)
+			written := errors.Is(err, task.ErrNotFound) || (err == nil && cmp.Diff(seeded, stored.Task) != "")
+			if err != nil && !errors.Is(err, task.ErrNotFound) {
+				t.Fatalf("get stored task: %v", err)
+			}
+			if written != tt.wantWritten {
+				t.Errorf("task written = %t, want %t", written, tt.wantWritten)
 			}
 
 			if tt.wantStatusCode >= 400 {
@@ -832,22 +761,20 @@ func TestTaskRolePermissions(t *testing.T) {
 // TestTaskOfAnotherUser checks that a task the caller cannot see is a 404 for
 // every operation, and that update and delete leave it alone.
 func TestTaskOfAnotherUser(t *testing.T) {
-	other := taskWith(func(tk *task.Task) { tk.OwnerID = uuid.MustParse("01a142fd-186e-7169-95c2-a186f9103a99") })
-
+	t.Parallel()
 	for _, method := range []string{http.MethodGet, http.MethodPatch, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
-			store := memory.NewTaskStore()
-			if _, err := store.Create(t.Context(), other); err != nil {
-				t.Fatalf("seed task: %v", err)
-			}
+			t.Parallel()
+			h, e, _ := setupTest(t)
+			other := e.newUser(t)
+			seeded := e.seedTask(t, other.ID, nil)
 
 			var body any
 			if method == http.MethodPatch {
 				body = `{"title":"hijacked"}`
 			}
 
-			h, _ := setupTestWithStore(t, store)
-			rec, req := prepareTestRequest(t, method, "/tasks/"+other.ID.String(), body)
+			rec, req := prepareTestRequest(t, method, "/tasks/"+seeded.ID.String(), body)
 			h.ServeHTTP(rec, req)
 
 			res := rec.Result()
@@ -857,12 +784,12 @@ func TestTaskOfAnotherUser(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", res.StatusCode, http.StatusNotFound)
 			}
 
-			got, err := store.GetForUpdate(t.Context(), other.ID)
+			got, err := e.tasks.Get(t.Context(), other.ID, seeded.ID)
 			if err != nil {
 				t.Fatalf("task is gone after %s: %v", method, err)
 			}
-			if got.Title != other.Title {
-				t.Errorf("title = %q, want %q (unchanged)", got.Title, other.Title)
+			if got.Task.Title != seeded.Title {
+				t.Errorf("title = %q, want %q (unchanged)", got.Task.Title, seeded.Title)
 			}
 		})
 	}
@@ -894,15 +821,16 @@ func (s mockFailingStore) Update(ctx context.Context, t task.Task) error {
 }
 
 func TestHandleStoreError(t *testing.T) {
+	t.Parallel()
 	storeEndpoints := []struct {
 		name, method, path string
 		body               any
 	}{
 		{"create", http.MethodPost, "/tasks", map[string]any{"title": "x"}},
 		{"list", http.MethodGet, "/tasks", nil},
-		{"get one", http.MethodGet, "/tasks/" + validID.String(), nil},
-		{"update", http.MethodPatch, "/tasks/" + validID.String(), map[string]any{"title": "y"}},
-		{"delete", http.MethodDelete, "/tasks/" + validID.String(), nil},
+		{"get one", http.MethodGet, "/tasks/" + notFoundID.String(), nil},
+		{"update", http.MethodPatch, "/tasks/" + notFoundID.String(), map[string]any{"title": "y"}},
+		{"delete", http.MethodDelete, "/tasks/" + notFoundID.String(), nil},
 	}
 
 	errUnavailable := fmt.Errorf("get task: %w", apperr.ErrServiceUnavailable)
@@ -995,7 +923,8 @@ func TestHandleStoreError(t *testing.T) {
 		for _, ep := range storeEndpoints {
 			name := ep.name + "-" + ec.name
 			t.Run(name, func(t *testing.T) {
-				h, logRec := setupTestWithStore(t, mockFailingStore{err: ec.err})
+				t.Parallel()
+				h, _, logRec := setupTestWithStore(t, mockFailingStore{err: ec.err})
 				rr, req := prepareTestRequest(t, ep.method, ep.path, ep.body)
 				h.ServeHTTP(rr, req)
 

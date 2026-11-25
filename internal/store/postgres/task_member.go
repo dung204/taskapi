@@ -171,7 +171,7 @@ func shareFromRow(r sqlcgen.ListTaskSharesRow) (task.Share, error) {
 		Kind:      kind,
 		ID:        r.ID,
 		Email:     r.Email,
-		Role:      r.Role,
+		Role:      task.Role(r.Role),
 		CreatedAt: utc(r.CreatedAt),
 		ExpiresAt: utcPtr(r.ExpiresAt),
 	}, nil

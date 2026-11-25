@@ -1,3 +1,5 @@
+// Package tasktest holds the checkers that compare tasks, patches, invitations
+// and members in tests.
 package tasktest
 
 import (

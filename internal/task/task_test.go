@@ -39,6 +39,7 @@ func taskWith(mod func(*task.Task)) task.Task {
 }
 
 func TestPatch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		start    *task.Task // task to patch, defaults to defaultTask()
@@ -330,6 +331,7 @@ func newTaskWith(mod func(*task.Task)) task.Task {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		now      time.Time // time passed to New(), defaults to testCreatedAt

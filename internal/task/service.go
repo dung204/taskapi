@@ -173,7 +173,7 @@ func (s Service) Assign(ctx context.Context, actor, id uuid.UUID, mail string) (
 
 		if userID != t.OwnerID {
 			if _, err := st.Members.Get(ctx, id, userID); err != nil {
-				if errors.Is(err, ErrUserNotFound) {
+				if errors.Is(err, ErrMemberNotFound) {
 					return ErrAssigneeNotMember
 				}
 				return err
@@ -399,13 +399,25 @@ func (s Service) addMember(ctx context.Context, actor, id, invitee uuid.UUID, ma
 			}
 		}
 
+		switch pendingInv, err := st.Invitations.GetPending(ctx, id, mail, now); {
+		case err == nil:
+			if err := st.Invitations.Cancel(ctx, id, pendingInv.ID, now); err != nil {
+				return err
+			}
+			s.metrics.InvitationsInc(metrics.InvitationEventCancelled)
+		case errors.Is(err, ErrInvitationNotFound):
+			// pass
+		default:
+			return err
+		}
+
 		return nil
 	})
 	if err != nil {
 		return Share{}, err
 	}
 
-	s.metrics.InvitationsInc(metrics.InvitationEventCreated)
+	s.metrics.InvitationsInc(metrics.InvitationEventAdded)
 
 	return Share{
 		Kind:      ShareKindMember,
@@ -441,6 +453,10 @@ func (s Service) createPending(ctx context.Context, actor, id uuid.UUID, mail st
 	}
 
 	err = s.tx.WithTx(ctx, func(st Stores) error {
+		if _, err := st.Tasks.GetForUpdate(ctx, id); err != nil {
+			return err
+		}
+
 		switch cnt, err := st.Invitations.DeleteExpiredPendingFor(ctx, id, mail, now); {
 		case err != nil:
 			return err
@@ -523,7 +539,21 @@ func (s Service) RemoveMember(ctx context.Context, actor, id, userID uuid.UUID) 
 		return ErrCannotManageShares
 	}
 
-	return s.members.Remove(ctx, id, userID)
+	return s.tx.WithTx(ctx, func(st Stores) error {
+		if _, err := st.Tasks.GetForUpdate(ctx, id); err != nil {
+			return err
+		}
+
+		if err := st.Members.Remove(ctx, id, userID); err != nil {
+			return err
+		}
+
+		if err := st.Tasks.ClearAssigneeIf(ctx, id, userID); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 func (s Service) Leave(ctx context.Context, actor, id uuid.UUID) error {
@@ -531,23 +561,41 @@ func (s Service) Leave(ctx context.Context, actor, id uuid.UUID) error {
 		return err
 	}
 
-	return s.members.Remove(ctx, id, actor)
+	return s.tx.WithTx(ctx, func(st Stores) error {
+		if _, err := st.Tasks.GetForUpdate(ctx, id); err != nil {
+			return err
+		}
+
+		if err := st.Members.Remove(ctx, id, actor); err != nil {
+			return err
+		}
+
+		if err := st.Tasks.ClearAssigneeIf(ctx, id, actor); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 func (s Service) AcceptInvitation(ctx context.Context, actor uuid.UUID, token string, now time.Time) (Access, error) {
-	tokenHash, err := opaquetoken.Decode(token)
+	raw, err := opaquetoken.Decode(token)
 	if err != nil {
 		return Access{}, ErrInvalidToken
+	}
+
+	tokenHash := opaquetoken.Hash(raw)
+
+	taskID, err := s.taskOfToken(ctx, tokenHash)
+	if err != nil {
+		return Access{}, err
 	}
 
 	var access Access
 
 	err = s.tx.WithTx(ctx, func(st Stores) error {
-		inv, err := st.Invitations.GetByTokenHash(ctx, tokenHash)
-		switch {
-		case errors.Is(err, ErrInvitationNotFound), err == nil && !inv.IsPending(now):
-			return ErrInvitationUnavailable
-		case err != nil:
+		inv, err := lockPendingInvitation(ctx, st, taskID, tokenHash, now)
+		if err != nil {
 			return err
 		}
 
@@ -558,21 +606,14 @@ func (s Service) AcceptInvitation(ctx context.Context, actor uuid.UUID, token st
 			return err
 		}
 
-		switch _, err := st.Tasks.GetForUpdate(ctx, inv.TaskID); {
-		case errors.Is(err, ErrNotFound):
-			return ErrInvitationUnavailable
-		case err != nil:
-			return err
-		}
-
 		switch cnt, err := st.Members.Count(ctx, inv.TaskID); {
 		case err != nil:
 			return err
 		case cnt >= maxMembersPerTask:
-			return ErrMembersExceeded
+			return ErrTaskFull
 		}
 
-		switch err := st.Invitations.SetStatus(ctx, inv.TaskID, InvitationStatusAccepted, now); {
+		switch err := st.Invitations.SetStatus(ctx, inv.ID, InvitationStatusAccepted, now); {
 		case errors.Is(err, ErrInvitationNotFound):
 			return ErrInvitationUnavailable
 		case err != nil:
@@ -626,17 +667,21 @@ func (s Service) AcceptInvitation(ctx context.Context, actor uuid.UUID, token st
 }
 
 func (s Service) DeclineInvitation(ctx context.Context, actor uuid.UUID, token string, now time.Time) error {
-	tokenHash, err := opaquetoken.Decode(token)
+	raw, err := opaquetoken.Decode(token)
 	if err != nil {
 		return ErrInvalidToken
 	}
 
+	tokenHash := opaquetoken.Hash(raw)
+
+	taskID, err := s.taskOfToken(ctx, tokenHash)
+	if err != nil {
+		return err
+	}
+
 	err = s.tx.WithTx(ctx, func(st Stores) error {
-		inv, err := st.Invitations.GetByTokenHash(ctx, tokenHash)
-		switch {
-		case errors.Is(err, ErrInvitationNotFound), err == nil && !inv.IsPending(now):
-			return ErrInvitationUnavailable
-		case err != nil:
+		inv, err := lockPendingInvitation(ctx, st, taskID, tokenHash, now)
+		if err != nil {
 			return err
 		}
 
@@ -647,14 +692,7 @@ func (s Service) DeclineInvitation(ctx context.Context, actor uuid.UUID, token s
 			return err
 		}
 
-		switch _, err := st.Tasks.GetForUpdate(ctx, inv.TaskID); {
-		case errors.Is(err, ErrNotFound):
-			return ErrInvitationUnavailable
-		case err != nil:
-			return err
-		}
-
-		switch err := st.Invitations.SetStatus(ctx, inv.TaskID, InvitationStatusDeclined, now); {
+		switch err := st.Invitations.SetStatus(ctx, inv.ID, InvitationStatusDeclined, now); {
 		case errors.Is(err, ErrInvitationNotFound):
 			return ErrInvitationUnavailable
 		case err != nil:
@@ -670,4 +708,49 @@ func (s Service) DeclineInvitation(ctx context.Context, actor uuid.UUID, token s
 	s.metrics.InvitationsInc(metrics.InvitationEventDeclined)
 
 	return nil
+}
+
+// taskOfToken returns the task the invitation behind tokenHash belongs to.
+//
+// It runs outside any transaction on purpose: the invitation lookup locks the
+// row, and a lock taken before the task lock would deadlock with the paths that
+// lock the task first (see [lockPendingInvitation]). Outside a transaction the
+// lock is released at once.
+func (s Service) taskOfToken(ctx context.Context, tokenHash []byte) (uuid.UUID, error) {
+	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
+	switch {
+	case errors.Is(err, ErrInvitationNotFound):
+		return uuid.Nil(), ErrInvitationUnavailable
+	case err != nil:
+		return uuid.Nil(), err
+	}
+
+	return inv.TaskID, nil
+}
+
+// lockPendingInvitation locks the task and then the invitation behind
+// tokenHash, and returns the invitation if it is still pending at now.
+//
+// Every transaction that touches a task's invitations must lock the task row
+// first and the invitation row second. Taking them in the opposite order
+// deadlocks with a direct add, which cancels the pending invitation of the same
+// email while holding the task lock. The invitation is read again here because
+// it may have changed since [Service.taskOfToken] looked at it.
+func lockPendingInvitation(ctx context.Context, st Stores, taskID uuid.UUID, tokenHash []byte, now time.Time) (Invitation, error) {
+	switch _, err := st.Tasks.GetForUpdate(ctx, taskID); {
+	case errors.Is(err, ErrNotFound):
+		return Invitation{}, ErrInvitationUnavailable
+	case err != nil:
+		return Invitation{}, err
+	}
+
+	inv, err := st.Invitations.GetByTokenHash(ctx, tokenHash)
+	switch {
+	case errors.Is(err, ErrInvitationNotFound), err == nil && !inv.IsPending(now):
+		return Invitation{}, ErrInvitationUnavailable
+	case err != nil:
+		return Invitation{}, err
+	}
+
+	return inv, nil
 }

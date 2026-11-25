@@ -206,6 +206,61 @@ func TestUserStore(t *testing.T, newStore func(t *testing.T) auth.UserStore) {
 		}
 	})
 
+	t.Run("SetTokensValidAfter sets tokens_valid_after and updated_at", func(t *testing.T) {
+		s := newStore(t)
+		u := newUser(t, "alice@example.com", new("hash"))
+		if err := s.Create(ctx, u); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		after := base.Add(time.Hour)
+		if err := s.SetTokensValidAfter(ctx, u.ID, after); err != nil {
+			t.Fatalf("SetTokensValidAfter: %v", err)
+		}
+
+		got, err := s.GetByID(ctx, u.ID)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+
+		want := u
+		want.TokensValidAfter = &after
+		want.UpdatedAt = after
+		CheckUser(t, got, want)
+	})
+
+	t.Run("SetTokensValidAfter never moves the cutoff back", func(t *testing.T) {
+		s := newStore(t)
+		u := newUser(t, "alice@example.com", new("hash"))
+		if err := s.Create(ctx, u); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		later := base.Add(2 * time.Hour)
+		for _, at := range []time.Time{later, base.Add(time.Hour)} {
+			if err := s.SetTokensValidAfter(ctx, u.ID, at); err != nil {
+				t.Fatalf("SetTokensValidAfter(%v): %v", at, err)
+			}
+		}
+
+		got, err := s.GetByID(ctx, u.ID)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+		if got.TokensValidAfter == nil || !got.TokensValidAfter.Equal(later) {
+			t.Errorf("tokens_valid_after = %v, want %v: an earlier value must be ignored", got.TokensValidAfter, later)
+		}
+	})
+
+	t.Run("SetTokensValidAfter returns ErrUserNotFound for unknown id", func(t *testing.T) {
+		s := newStore(t)
+
+		err := s.SetTokensValidAfter(ctx, uuid.NewV7(), base)
+		if !errors.Is(err, auth.ErrUserNotFound) {
+			t.Errorf("err = %v, want %v", err, auth.ErrUserNotFound)
+		}
+	})
+
 	t.Run("UpdatePassword returns ErrUserNotFound for unknown id", func(t *testing.T) {
 		s := newStore(t)
 

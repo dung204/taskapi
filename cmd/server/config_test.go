@@ -122,7 +122,6 @@ func TestLoadTasks(t *testing.T) {
 
 	checkLoad(t, loadTasks, nil, []loadCase[tasksCfg]{
 		{name: "defaults", want: defaults},
-		{name: "the old TASKS_STORE variable is ignored", env: map[string]string{"TASKS_STORE": "foo"}, want: defaults},
 		{name: "valid OVERDUE_SCAN_WORKER_ENABLED", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "false"}, want: with(func(c *tasksCfg) { c.overdueScanEnabled = false })},
 		{name: "OVERDUE_SCAN_WORKER_ENABLED=true with valid OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "true", "OVERDUE_SCAN_WORKER_INTERVAL": "500ms"}, want: with(func(c *tasksCfg) { c.overdueScanInterval = 500 * time.Millisecond })},
 		{name: "OVERDUE_SCAN_WORKER_ENABLED=false with invalid OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "false", "OVERDUE_SCAN_WORKER_INTERVAL": "abc"}, want: with(func(c *tasksCfg) { c.overdueScanEnabled = false })},

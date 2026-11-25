@@ -55,6 +55,7 @@ func limiterFailOpen(t *testing.T, reg *prometheus.Registry, name string) float6
 }
 
 func TestFailOpenInviteMailLimiter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	logger := slog.New(slog.DiscardHandler)
 
@@ -93,6 +94,7 @@ func TestFailOpenInviteMailLimiter(t *testing.T) {
 }
 
 func TestFailOpenOwnerInviteLimiter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	logger := slog.New(slog.DiscardHandler)
 	owner := uuid.NewV7()

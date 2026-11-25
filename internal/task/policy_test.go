@@ -8,6 +8,7 @@ import (
 )
 
 func TestRoleCan(t *testing.T) {
+	t.Parallel()
 	allPerms := []task.Permission{
 		task.PermView,
 		task.PermChangeStatus,
@@ -90,6 +91,7 @@ func TestRoleCan(t *testing.T) {
 }
 
 func TestRoleCanCombinedPermissions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		role task.Role
@@ -113,6 +115,7 @@ func TestRoleCanCombinedPermissions(t *testing.T) {
 }
 
 func TestRolePermissionsGrowWithRole(t *testing.T) {
+	t.Parallel()
 	// Each role in the ladder must hold everything the one below it holds.
 	ladder := []task.Role{
 		task.RoleViewer,
@@ -144,6 +147,7 @@ func TestRolePermissionsGrowWithRole(t *testing.T) {
 }
 
 func TestRoleIsGrantable(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		role task.Role
 		want bool
@@ -168,6 +172,7 @@ func TestRoleIsGrantable(t *testing.T) {
 }
 
 func TestRequiredForPatch(t *testing.T) {
+	t.Parallel()
 	title := "title"
 	desc := "description"
 	status := task.StatusDone
@@ -210,6 +215,7 @@ func TestRequiredForPatch(t *testing.T) {
 }
 
 func TestRequiredForPatchAgainstRoles(t *testing.T) {
+	t.Parallel()
 	title := "title"
 	status := task.StatusDoing
 

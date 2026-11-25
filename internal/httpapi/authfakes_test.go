@@ -1,21 +1,23 @@
 package httpapi
 
-// In-memory fakes for the auth service's dependencies, used by setupAuthTest.
-// They follow the contracts that authtest checks on the real stores, but are
-// only as complete as the HTTP tests need.
+// Fakes for the auth service's dependencies that are not Postgres (clock,
+// revoker, limiters, hasher, mailer), used by setupAuthTest. The users,
+// sessions, tokens and outbox are the real Postgres stores.
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 	"uuid"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/email"
@@ -43,70 +45,82 @@ func (c *testClock) Advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// fakeDB holds the rows of all the fake stores behind one lock.
-type fakeDB struct {
-	mu       sync.Mutex
-	users    map[uuid.UUID]auth.User
-	sessions map[uuid.UUID]auth.Session
-	tokens   []auth.UserToken
-	outbox   []email.OutboxItem
-	handled  int // outbox items already turned into mails
-	mails    map[string][]sentMail
+// mailbox plays the part of the outbox worker and the mailer. The auth service
+// queues its emails in the real outbox table; deliver turns the rows queued for
+// an address into sentMails, with a fresh one-time token (stored through the
+// real token store) when the kind needs one.
+type mailbox struct {
+	pool   *pgxpool.Pool
+	tokens auth.UserTokenStore
+
+	mu    sync.Mutex
+	seen  map[uuid.UUID]bool
+	mails map[string][]sentMail
 }
 
-func newFakeDB() *fakeDB {
-	return &fakeDB{
-		users:    make(map[uuid.UUID]auth.User),
-		sessions: make(map[uuid.UUID]auth.Session),
-		mails:    make(map[string][]sentMail),
-	}
+func newMailbox(pool *pgxpool.Pool, tokens auth.UserTokenStore) *mailbox {
+	return &mailbox{pool: pool, tokens: tokens, seen: make(map[uuid.UUID]bool), mails: make(map[string][]sentMail)}
 }
 
-func (db *fakeDB) stores() auth.Stores {
-	return auth.Stores{
-		Users:      fakeUsers{db},
-		UserTokens: fakeUserTokens{db},
-		Sessions:   fakeSessions{db},
-		Outbox:     fakeOutbox{db},
-	}
-}
-
-// WithTx implements [auth.transactor]. There is no rollback: the tests do not
-// inject failures into a transaction.
-func (db *fakeDB) WithTx(_ context.Context, fn func(auth.Stores) error) error {
-	return fn(db.stores())
-}
-
-// deliver plays the part of the outbox worker and the mailer: every pending
-// outbox item becomes a sentMail, with a fresh one-time token when the kind
-// needs one.
-func (db *fakeDB) deliver(tb testing.TB, now time.Time) {
+// to returns, oldest first, the emails sent to the address so far.
+func (m *mailbox) to(tb testing.TB, address string, now time.Time) []sentMail {
 	tb.Helper()
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	for ; db.handled < len(db.outbox); db.handled++ {
-		item := db.outbox[db.handled]
-		m := sentMail{Kind: string(item.Kind)}
+	address = strings.ToLower(address)
+	rows, err := m.pool.Query(tb.Context(),
+		`SELECT id, user_id, kind FROM email_outbox WHERE lower(to_email) = $1 ORDER BY created_at, id`, address)
+	if err != nil {
+		tb.Fatalf("query the outbox: %v", err)
+	}
+	type queued struct {
+		id, userID uuid.UUID
+		kind       email.Kind
+	}
+	var items []queued
+	for rows.Next() {
+		var q queued
+		if err := rows.Scan(&q.id, &q.userID, &q.kind); err != nil {
+			rows.Close()
+			tb.Fatalf("scan the outbox: %v", err)
+		}
+		items = append(items, q)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		tb.Fatalf("read the outbox: %v", err)
+	}
 
-		if purpose, ok := tokenPurposeOf(item.Kind); ok {
+	for _, q := range items {
+		if m.seen[q.id] {
+			continue
+		}
+		m.seen[q.id] = true
+		mail := sentMail{Kind: string(q.kind)}
+
+		if purpose, ok := tokenPurposeOf(q.kind); ok {
 			raw := make([]byte, sha256.Size)
 			if _, err := rand.Read(raw); err != nil {
 				tb.Fatalf("generate token: %v", err)
 			}
 			hash := sha256.Sum256(raw)
 			tok, err := auth.NewUserToken(auth.NewUserTokenParams{
-				UserID: item.UserID, Purpose: purpose, TokenHash: hash[:], TTL: fakeTokenTTL(purpose),
+				UserID: q.userID, Purpose: purpose, TokenHash: hash[:], TTL: fakeTokenTTL(purpose),
 			}, now)
 			if err != nil {
 				tb.Fatalf("new user token: %v", err)
 			}
-			db.tokens = append(db.tokens, tok)
-			m.Token = base64.RawURLEncoding.EncodeToString(raw)
+			if err := m.tokens.Create(tb.Context(), tok); err != nil {
+				tb.Fatalf("create user token: %v", err)
+			}
+			mail.Token = base64.RawURLEncoding.EncodeToString(raw)
 		}
 
-		db.mails[item.ToEmail] = append(db.mails[item.ToEmail], m)
+		m.mails[address] = append(m.mails[address], mail)
 	}
+
+	return slices.Clone(m.mails[address])
 }
 
 // fakeTokenTTL mirrors the defaults of VERIFY_EMAIL_TOKEN_TTL and
@@ -127,208 +141,6 @@ func tokenPurposeOf(k email.Kind) (auth.TokenPurpose, bool) {
 	default:
 		return "", false
 	}
-}
-
-// --- users -------------------------------------------------------------------
-
-type fakeUsers struct{ db *fakeDB }
-
-var _ auth.UserStore = fakeUsers{}
-
-func (s fakeUsers) Create(_ context.Context, u auth.User) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	for _, other := range s.db.users {
-		if other.Email == u.Email {
-			return auth.ErrEmailTaken
-		}
-	}
-	s.db.users[u.ID] = u
-	return nil
-}
-
-func (s fakeUsers) GetByID(_ context.Context, id uuid.UUID) (auth.User, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	u, ok := s.db.users[id]
-	if !ok {
-		return auth.User{}, auth.ErrUserNotFound
-	}
-	return u, nil
-}
-
-func (s fakeUsers) GetByEmail(_ context.Context, mail string) (auth.User, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	for _, u := range s.db.users {
-		if u.Email == mail {
-			return u, nil
-		}
-	}
-	return auth.User{}, auth.ErrUserNotFound
-}
-
-func (s fakeUsers) update(id uuid.UUID, fn func(*auth.User)) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	u, ok := s.db.users[id]
-	if !ok {
-		return auth.ErrUserNotFound
-	}
-	fn(&u)
-	s.db.users[id] = u
-	return nil
-}
-
-func (s fakeUsers) SetEmailVerified(_ context.Context, id uuid.UUID, at time.Time) error {
-	return s.update(id, func(u *auth.User) { u.EmailVerifiedAt = &at; u.UpdatedAt = at })
-}
-
-func (s fakeUsers) UpdatePassword(_ context.Context, id uuid.UUID, hash string, at time.Time) error {
-	return s.update(id, func(u *auth.User) { u.PasswordHash = &hash; u.UpdatedAt = at })
-}
-
-func (s fakeUsers) SetTokensValidAfter(_ context.Context, id uuid.UUID, after time.Time) error {
-	return s.update(id, func(u *auth.User) { u.TokensValidAfter = &after; u.UpdatedAt = after })
-}
-
-// --- sessions ----------------------------------------------------------------
-
-type fakeSessions struct{ db *fakeDB }
-
-var _ auth.SessionStore = fakeSessions{}
-
-func (s fakeSessions) Create(_ context.Context, ss auth.Session) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	s.db.sessions[ss.ID] = ss
-	return nil
-}
-
-// GetByRefreshTokenHash finds a session by its current or its previous hash.
-func (s fakeSessions) GetByRefreshTokenHash(_ context.Context, hash []byte) (auth.Session, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	for _, ss := range s.db.sessions {
-		if bytes.Equal(ss.RefreshTokenHash, hash) ||
-			(len(ss.PreviousRefreshTokenHash) > 0 && bytes.Equal(ss.PreviousRefreshTokenHash, hash)) {
-			return ss, nil
-		}
-	}
-	return auth.Session{}, auth.ErrSessionNotFound
-}
-
-func (s fakeSessions) Rotate(_ context.Context, id uuid.UUID, oldHash, newHash []byte, now time.Time) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	ss, ok := s.db.sessions[id]
-	if !ok || !bytes.Equal(ss.RefreshTokenHash, oldHash) {
-		return auth.ErrSessionNotRotated
-	}
-	ss.PreviousRefreshTokenHash = oldHash
-	ss.RefreshTokenHash = newHash
-	ss.RotatedAt = &now
-	s.db.sessions[id] = ss
-	return nil
-}
-
-func (s fakeSessions) DeleteByID(_ context.Context, id uuid.UUID) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	delete(s.db.sessions, id)
-	return nil
-}
-
-func (s fakeSessions) DeleteByUserID(_ context.Context, userID uuid.UUID) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	for id, ss := range s.db.sessions {
-		if ss.UserID == userID {
-			delete(s.db.sessions, id)
-		}
-	}
-	return nil
-}
-
-func (s fakeSessions) DeleteExpired(_ context.Context, now time.Time, limit int32) (int64, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	var n int64
-	for id, ss := range s.db.sessions {
-		if n >= int64(limit) {
-			break
-		}
-		if ss.IsExpired(now) {
-			delete(s.db.sessions, id)
-			n++
-		}
-	}
-	return n, nil
-}
-
-// --- one-time user tokens ----------------------------------------------------
-
-type fakeUserTokens struct{ db *fakeDB }
-
-var _ auth.UserTokenStore = fakeUserTokens{}
-
-func (s fakeUserTokens) Create(_ context.Context, t auth.UserToken) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	s.db.tokens = append(s.db.tokens, t)
-	return nil
-}
-
-func (s fakeUserTokens) Consume(_ context.Context, hash []byte, purpose auth.TokenPurpose, now time.Time) (uuid.UUID, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	for i, t := range s.db.tokens {
-		if !bytes.Equal(t.TokenHash, hash) || t.Purpose != purpose {
-			continue
-		}
-		if t.UsedAt != nil || !now.Before(t.ExpiresAt) {
-			return uuid.UUID{}, auth.ErrUserTokenInvalid
-		}
-		s.db.tokens[i].UsedAt = &now
-		return t.UserID, nil
-	}
-	return uuid.UUID{}, auth.ErrUserTokenInvalid
-}
-
-func (s fakeUserTokens) DeleteByUserAndPurpose(_ context.Context, userID uuid.UUID, purpose auth.TokenPurpose) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	s.db.tokens = slices.DeleteFunc(s.db.tokens, func(t auth.UserToken) bool {
-		return t.UserID == userID && t.Purpose == purpose
-	})
-	return nil
-}
-
-func (s fakeUserTokens) DeleteExpired(_ context.Context, now time.Time, limit int32) (int64, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	var n int64
-	s.db.tokens = slices.DeleteFunc(s.db.tokens, func(t auth.UserToken) bool {
-		if n < int64(limit) && !now.Before(t.ExpiresAt) {
-			n++
-			return true
-		}
-		return false
-	})
-	return n, nil
-}
-
-// --- outbox ------------------------------------------------------------------
-
-type fakeOutbox struct{ db *fakeDB }
-
-var _ auth.OutboxWriter = fakeOutbox{}
-
-func (s fakeOutbox) Create(_ context.Context, item email.OutboxItem) error {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-	s.db.outbox = append(s.db.outbox, item)
-	return nil
 }
 
 // --- revocation --------------------------------------------------------------

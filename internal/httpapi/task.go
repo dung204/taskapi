@@ -245,6 +245,8 @@ func (h *taskHandler) AcceptInvitation(ctx context.Context, request oapigen.Acce
 	defer cancel()
 
 	switch acc, err := h.service.AcceptInvitation(dbCtx, identityFrom(ctx).UserID, request.Body.Token, h.now()); {
+	case errors.Is(err, task.ErrInvalidToken):
+		return oapigen.AcceptInvitation400JSONResponse{Error: err.Error()}, nil
 	case err != nil:
 		return nil, err
 	default:
@@ -259,6 +261,8 @@ func (h *taskHandler) DeclineInvitation(ctx context.Context, request oapigen.Dec
 	defer cancel()
 
 	switch err := h.service.DeclineInvitation(dbCtx, identityFrom(ctx).UserID, request.Body.Token, h.now()); {
+	case errors.Is(err, task.ErrInvalidToken):
+		return oapigen.DeclineInvitation400JSONResponse{Error: err.Error()}, nil
 	case err != nil:
 		return nil, err
 	default:

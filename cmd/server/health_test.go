@@ -98,7 +98,7 @@ func TestHealthHandler(t *testing.T) {
 		want           healthResponse
 	}{
 		{
-			"no checks (memory store)", nil,
+			"no checks", nil,
 			http.StatusOK,
 			healthResponse{Status: HealthStatusOK, Checks: map[string]string{}},
 		},

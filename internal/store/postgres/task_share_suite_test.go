@@ -1,4 +1,4 @@
-package tasktest
+package postgres
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
+	"github.com/dung204/taskapi/internal/task/tasktest"
 )
 
 // ShareDeps is what the [task.InvitationStore] and [task.MemberStore] suites
@@ -127,7 +128,8 @@ func seedMember(ctx context.Context, t *testing.T, d ShareDeps, taskID, userID u
 
 // TestInvitationStore runs the behaviour suite that every [task.InvitationStore]
 // must pass. newDeps must return empty stores.
-func TestInvitationStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
+func runInvitationStoreSuite(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
+	t.Helper()
 	ctx := t.Context()
 
 	// missing checks that the invitation was removed.
@@ -148,7 +150,7 @@ func TestInvitationStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 		if err != nil {
 			t.Fatalf("GetByTokenHash: %v", err)
 		}
-		CheckInvitation(t, got, inv)
+		tasktest.CheckInvitation(t, got, inv)
 	}
 
 	t.Run("create then get by token hash", func(t *testing.T) {
@@ -222,7 +224,7 @@ func TestInvitationStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 			t.Fatalf("GetForMail: %v", err)
 		}
 
-		CheckInvitation(t, got.Invitation, inv)
+		tasktest.CheckInvitation(t, got.Invitation, inv)
 		if got.TaskTitle != tk.Title {
 			t.Errorf("TaskTitle = %q, want %q", got.TaskTitle, tk.Title)
 		}
@@ -395,7 +397,7 @@ func TestInvitationStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 			seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusPending),
 			seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusPending),
 		}
-		fresh := seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusPending)
+		fresh := seedInvitationAt(ctx, t, d, tk.ID, task.InvitationStatusPending, later)
 		accepted := seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusAccepted)
 		declined := seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusDeclined)
 
@@ -438,7 +440,7 @@ func TestInvitationStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 			seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusCancelled),
 			seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusDeclined),
 		}
-		fresh := seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusDeclined)
+		fresh := seedInvitationAt(ctx, t, d, tk.ID, task.InvitationStatusDeclined, later)
 		pending := seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusPending)
 		accepted := seedInvitation(ctx, t, d, tk.ID, task.InvitationStatusAccepted)
 
@@ -475,7 +477,8 @@ func TestInvitationStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 
 // TestMemberStore runs the behaviour suite that every [task.MemberStore] must
 // pass. newDeps must return empty stores.
-func TestMemberStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
+func runMemberStoreSuite(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
+	t.Helper()
 	ctx := t.Context()
 
 	t.Run("create then get again", func(t *testing.T) {
@@ -489,7 +492,7 @@ func TestMemberStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 			t.Fatalf("Get: %v", err)
 		}
 
-		CheckMember(t, got, m)
+		tasktest.CheckMember(t, got, m)
 	})
 
 	t.Run("Create returns ErrMemberExists for an existing member", func(t *testing.T) {
@@ -566,7 +569,7 @@ func TestMemberStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 			t.Fatalf("SetRole: %v", err)
 		}
 
-		CheckShare(t, got, task.Share{
+		tasktest.CheckShare(t, got, task.Share{
 			Kind: task.ShareKindMember, ID: userID, Email: email,
 			Role: task.RoleManager, CreatedAt: m.CreatedAt,
 		})
@@ -578,7 +581,7 @@ func TestMemberStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		CheckMember(t, stored, want)
+		tasktest.CheckMember(t, stored, want)
 	})
 
 	t.Run("SetRole returns ErrMemberNotFound for a user who is not a member", func(t *testing.T) {
@@ -693,7 +696,7 @@ func TestMemberStore(t *testing.T, newDeps func(t *testing.T) ShareDeps) {
 				t.Errorf("unexpected share %+v", sh)
 				continue
 			}
-			CheckShare(t, sh, want[i])
+			tasktest.CheckShare(t, sh, want[i])
 		}
 	})
 

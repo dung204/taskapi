@@ -28,27 +28,33 @@ FROM task_members
 WHERE task_id = $1;
 
 -- name: ListTaskShares :many
-SELECT
-  'member'::text AS kind,
-  tm.user_id     AS id,
-  u.email        AS email,
-  tm.role        AS role,
-  tm.created_at   AS created_at,
-  NULL::timestamptz AS expires_at
-FROM task_members AS tm
-INNER JOIN users AS u ON tm.user_id = u.id
-WHERE tm.task_id = sqlc.arg('task_id')
+WITH shares AS (
+  SELECT
+    'member'::text AS kind,
+    tm.user_id     AS id,
+    u.email        AS email,
+    tm.role        AS role,
+    tm.created_at   AS created_at,
+    NULL::timestamptz AS expires_at
+  FROM task_members AS tm
+  INNER JOIN users AS u ON tm.user_id = u.id
+  WHERE tm.task_id = sqlc.arg('task_id')
 
-UNION ALL
+  UNION ALL
 
+  SELECT
+    'invitation'::text AS kind,
+    ti.id AS id,
+    ti.email AS email,
+    ti.role AS role,
+    ti.created_at AS created_at,
+    ti.expires_at AS expires_at
+  FROM task_invitations AS ti
+  WHERE ti.task_id = sqlc.arg('task_id')
+    AND ti.status = 'pending'
+    AND ti.expires_at > sqlc.arg('now')
+)
 SELECT
-  'invitation'::text AS kind,
-  ti.id AS id,
-  ti.email AS email,
-  ti.role AS role,
-  ti.created_at AS created_at,
-  ti.expires_at AS expires_at
-FROM task_invitations AS ti
-WHERE ti.task_id = sqlc.arg('task_id')
-  AND ti.status = 'pending'
-  AND ti.expires_at > sqlc.arg('now');
+  s.kind, s.id, s.email, s.role, s.created_at, s.expires_at
+FROM shares AS s
+ORDER BY s.created_at ASC;

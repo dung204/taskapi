@@ -3,21 +3,17 @@ package postgres
 import (
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 	"time"
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
+	"github.com/dung204/taskapi/internal/testutil"
 )
 
 func TestTransactor(t *testing.T) {
-	url := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testutil.DatabaseURL(t)
 
 	errAbort := errors.New("abort")
 

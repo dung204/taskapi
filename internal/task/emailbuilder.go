@@ -74,6 +74,8 @@ func (b *EmailBuilder) Build(ctx context.Context, item email.ClaimedItem) (email
 		return email.Message{}, email.ErrNothingToSend
 	case err != nil:
 		return email.Message{}, fmt.Errorf("build email: %w", err)
+	case item.Kind == email.KindTaskInvitation && !inv.Invitation.IsPending(now):
+		return email.Message{}, email.ErrNothingToSend
 	}
 
 	payload := emailPayload{

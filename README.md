@@ -13,7 +13,7 @@
 
 A REST API for managing tasks, written in Go with the standard library (`net/http`, `log/slog`, `testing`, ...) plus a few small dependencies: the [`chi`](https://github.com/go-chi/chi) router, the [`pgx`](https://github.com/jackc/pgx) PostgreSQL driver, the [`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen) runtime, [`prometheus/client_golang`](https://github.com/prometheus/client_golang) for metrics and [`golang.org/x/time/rate`](https://pkg.go.dev/golang.org/x/time/rate) for rate limiting. The routes and request/response types are generated from the OpenAPI spec in `internal/httpapi/docs/openapi.yml`.
 
-> **Status:** early development. Implemented: the task endpoints, the in-memory and PostgreSQL stores, a background worker that marks overdue tasks, per-IP rate limiting, Prometheus metrics, an optional pprof server, and a docker compose stack with Prometheus and Grafana. Migrations are applied with [goose](https://github.com/pressly/goose) (see [PostgreSQL](#postgresql)).
+> **Status:** early development. Implemented: the task endpoints, the PostgreSQL store, a background worker that marks overdue tasks, per-IP rate limiting, Prometheus metrics, an optional pprof server, and a docker compose stack with Prometheus and Grafana. Migrations are applied with [goose](https://github.com/pressly/goose) (see [PostgreSQL](#postgresql)).
 
 ## Requirements
 
@@ -27,7 +27,7 @@ A REST API for managing tasks, written in Go with the standard library (`net/htt
 go run ./cmd/server
 ```
 
-The server listens on `:8080` and keeps tasks in memory by default. To check that it's up:
+The server listens on `:8080` and needs a migrated Postgres (`DATABASE_URL`). To check that it's up:
 
 ```sh
 curl http://localhost:9091/healthz
@@ -60,8 +60,7 @@ Settings come from environment variables (see `.env.example`). An empty value co
 | Variable          | Default  | Description                                                                 |
 | ----------------- | -------- | --------------------------------------------------------------------------- |
 | `PORT`            | `8080`   | Port the HTTP server listens on (1-65535)                                   |
-| `STORE`           | `memory` | Storage backend: `memory` or `postgres`                                     |
-| `DATABASE_URL`    | (none)   | Postgres connection string. Required when `STORE=postgres`                  |
+| `DATABASE_URL`    | (none)   | Postgres connection string. Required                                        |
 | `LOG_FORMAT`      | `text`   | Log format: `text` or `json`                                                |
 | `LOG_LEVEL`       | `info`   | Log level: `debug`, `info`, `warn` or `error`                               |
 | `OVERDUE_SCAN_WORKER_ENABLED`  | `true`   | Run the background worker that marks overdue tasks                          |
@@ -194,7 +193,8 @@ make gen-sql         # regenerate the sqlc code after editing the SQL queries
 make tidy            # go mod tidy
 make cover           # tests with coverage, writes coverage.out (make cover-html for a report)
 make hooks           # install the lefthook git hooks (lint on pre-commit, tests on pre-push)
-make ci              # everything CI runs (needs TEST_DATABASE_URL)
+make test-down        # remove the throwaway test Postgres that `make test` started
+make ci              # everything CI runs (uses TEST_DATABASE_URL, or starts Postgres in Docker)
 ```
 
 Migrations: `make migrate-up`, `migrate-down`, `migrate-status` and `migrate-create name=add_index` (they need `DATABASE_URL`). `make lint-sql` lints them with squawk (`make tools` installs the binary tools).
@@ -203,15 +203,17 @@ If `go build` fails with a VCS-stamping error in your environment, build with `g
 
 ### Tests
 
-The unit and handler tests run without any setup. The PostgreSQL store tests are skipped unless `TEST_DATABASE_URL` is set:
+All store, service and HTTP tests run against real Postgres. `make test` needs only Docker: `scripts/test.sh` starts a throwaway Postgres (compose project `taskapi-test`, `docker-compose.test.yml`, port 55432, data on tmpfs), creates and migrates a template database and runs `go test`. The container stays up between runs; `make test-down` removes it.
+
+To use your own Postgres instead (CI does), create a dedicated database whose name contains `test` and set `TEST_DATABASE_URL` to it; the script then migrates it and skips Docker:
 
 ```sh
-TEST_DATABASE_URL='postgres://user:password@localhost:5432/test_tasks?sslmode=disable' make test-db
+TEST_DATABASE_URL='postgres://user:password@localhost:5432/test_tasks?sslmode=disable' make test
 ```
 
-The `tasks` table must already exist in that database, and **every test truncates it**, so use a dedicated database.
+That database is only a **template**: each test package clones its own database from it (`internal/testutil`) and drops the clone at the end, so packages can run in parallel and tests truncate nothing in the template. Without `TEST_DATABASE_URL` and Docker, `make test` fails with a message; running `go test` directly skips the Postgres tests locally and fails them when `CI` is set.
 
-The memory and PostgreSQL stores share one behaviour suite, `tasktest.TestStore` in `internal/task/tasktest`. Any new store should run it too.
+The store behaviour suites live in `internal/store/postgres` (`task_suite_test.go`, `task_share_suite_test.go`).
 
 ## Project layout
 
@@ -223,9 +225,8 @@ The memory and PostgreSQL stores share one behaviour suite, `tasktest.TestStore`
 │   │   ├── docs/          OpenAPI spec (openapi.yml) and Swagger UI
 │   │   └── oapigen/       code generated from the spec by oapi-codegen, plus API <-> domain converters
 │   ├── task/              task model, validation and the Store interface
-│   │   └── tasktest/      shared test helpers and the store behaviour suite
+│   │   └── tasktest/      shared test checkers
 │   ├── store/
-│   │   ├── memory/        in-memory store
 │   │   └── postgres/      PostgreSQL store (sqlc-generated queries, pool metrics)
 │   ├── ratelimit/         in-memory per-key token bucket limiter
 │   ├── worker/            background worker that marks overdue tasks

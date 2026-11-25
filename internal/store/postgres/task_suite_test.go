@@ -1,6 +1,4 @@
-// Package tasktest holds test helpers shared by the store implementations,
-// including the behaviour suite that every [task.Store] must pass.
-package tasktest
+package postgres
 
 import (
 	"context"
@@ -11,6 +9,7 @@ import (
 	"uuid"
 
 	"github.com/dung204/taskapi/internal/task"
+	"github.com/dung204/taskapi/internal/task/tasktest"
 )
 
 // checkTasks compares the tasks of got with want. The viewer in these tests
@@ -22,7 +21,7 @@ func checkTasks(t *testing.T, got []task.Access, want []task.Task) {
 		t.Fatalf("len = %d, want %d", len(got), len(want))
 	}
 	for i := range want {
-		CheckTask(t, got[i].Task, want[i])
+		tasktest.CheckTask(t, got[i].Task, want[i])
 		if got[i].Role != task.RoleOwner {
 			t.Errorf("role = %q, want %q", got[i].Role, task.RoleOwner)
 		}
@@ -42,10 +41,11 @@ func patchTask(ctx context.Context, s task.Store, id uuid.UUID, p task.Patch, no
 	return s.Update(ctx, t)
 }
 
-// TestStore runs the behaviour suite. newStoreOwners also returns a function that
+// runTaskStoreSuite runs the behaviour suite. newStoreOwners also returns a function that
 // provides a fresh owner ID on each call, because tasks belong to users and a
 // real database enforces that with a foreign key.
-func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func() uuid.UUID)) {
+func runTaskStoreSuite(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func() uuid.UUID)) {
+	t.Helper()
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	// newStore returns an empty store and sets owner to a fresh owner ID, the
@@ -228,7 +228,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		CheckTask(t, got.Task, done)
+		tasktest.CheckTask(t, got.Task, done)
 	})
 
 	t.Run("MarkOverdue updates updated_at", func(t *testing.T) {
@@ -253,7 +253,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		want := created
 		want.Status = task.StatusOverdue
 		want.UpdatedAt = now.UTC().Truncate(time.Microsecond)
-		CheckTask(t, got.Task, want)
+		tasktest.CheckTask(t, got.Task, want)
 
 		// Already-overdue tasks are not counted or touched again.
 		n, err = s.MarkOverdue(context.Background(), now.Add(time.Hour))
@@ -281,7 +281,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		CheckTask(t, got.Task, created)
+		tasktest.CheckTask(t, got.Task, created)
 	})
 
 	t.Run("Update persists the patched fields", func(t *testing.T) {
@@ -314,7 +314,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		want.DueAt = &due
 		want.UpdatedAt = now.UTC().Truncate(time.Microsecond)
 
-		CheckTask(t, got.Task, want)
+		tasktest.CheckTask(t, got.Task, want)
 	})
 
 	t.Run("Update leaves the owner alone", func(t *testing.T) {
@@ -336,7 +336,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 
 		want := created
 		want.Title = "new title"
-		CheckTask(t, got.Task, want)
+		tasktest.CheckTask(t, got.Task, want)
 	})
 
 	t.Run("Get hides tasks owned by someone else", func(t *testing.T) {
@@ -390,6 +390,6 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 			t.Fatalf("Get: %v", err)
 		}
 
-		CheckTask(t, got.Task, created)
+		tasktest.CheckTask(t, got.Task, created)
 	})
 }

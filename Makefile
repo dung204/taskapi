@@ -101,17 +101,20 @@ lint-sql: $(GOLANGCI_LINT_STAMP) ## Run squawk to lint SQL migrations
 
 # --- Tests -------------------------------------------------------------------
 .PHONY: test
-test: ## Run tests (race detector, shuffled; Postgres tests skip without TEST_DATABASE_URL)
-	go test -race -shuffle=on ./...
+test: ## Run tests (race, shuffled); starts a throwaway Postgres unless TEST_DATABASE_URL is set
+	scripts/test.sh -race -shuffle=on ./...
 
 .PHONY: test-db
-test-db: ## Run tests including Postgres store (TRUNCATES the tasks table of TEST_DATABASE_URL!)
-	@test -n "$${TEST_DATABASE_URL:-}" || { echo "TEST_DATABASE_URL is not set (use a dedicated database)."; exit 1; }
-	go test -race -shuffle=on -count=1 ./...
+test-db: _require-test-db ## Run tests against the migrated template database in TEST_DATABASE_URL (CI)
+	scripts/test.sh -race -shuffle=on -count=1 ./...
+
+.PHONY: test-down
+test-down: ## Remove the throwaway test Postgres (only the taskapi-test compose project)
+	docker compose -p taskapi-test -f docker-compose.test.yml down -v
 
 .PHONY: cover
-cover: ## Tests with coverage (writes coverage.out; Postgres tests need TEST_DATABASE_URL)
-	go test -race -shuffle=on -count=1 -coverpkg=./... -coverprofile=$(COVER_PROFILE).raw ./...
+cover: ## Tests with coverage (writes coverage.out; same database setup as `make test`)
+	scripts/test.sh -race -shuffle=on -count=1 -coverpkg=./... -coverprofile=$(COVER_PROFILE).raw ./...
 	grep -v -E '$(COVER_EXCLUDE)' $(COVER_PROFILE).raw > $(COVER_PROFILE)
 	go tool cover -func=$(COVER_PROFILE) | tail -n 1
 
@@ -146,7 +149,7 @@ _require-test-db:
 	@test -n "$${TEST_DATABASE_URL:-}" || { echo "TEST_DATABASE_URL is not set: Postgres tests would be skipped."; exit 1; }
 
 .PHONY: ci
-ci: fmt-check vet lint test-db gen-check tidy-check _require-test-db cover cover-check ## Everything CI runs
+ci: fmt-check vet lint test gen-check tidy-check cover cover-check ## Everything CI runs
 
 # --- Build and run -----------------------------------------------------------
 .PHONY: build
