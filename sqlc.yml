@@ -52,12 +52,33 @@ sql:
             go_type:
               import: "uuid"
               type: "UUID"
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              import: "uuid"
+              type: "UUID"
+              pointer: true
 
           # tasks.status -> the domain type, not a bare string.
           - column: "tasks.status"
             go_type:
               import: "github.com/dung204/taskapi/internal/task"
               type: "Status"
+
+          - column: "task_invitations.role"
+            go_type:
+              import: "github.com/dung204/taskapi/internal/task"
+              type: "Role"
+
+          - column: "task_invitations.status"
+            go_type:
+              import: "github.com/dung204/taskapi/internal/task"
+              type: "InvitationStatus"
+
+          - column: "task_members.role"
+            go_type:
+              import: "github.com/dung204/taskapi/internal/task"
+              type: "Role"
 
           - column: "user_tokens.purpose"
             go_type:
@@ -68,3 +89,4 @@ sql:
             go_type:
               import: "github.com/dung204/taskapi/internal/email"
               type: "Kind"
+

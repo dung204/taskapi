@@ -15,7 +15,6 @@ The package doc in `httpapi.go` describes the request pipeline, authentication a
 
 ## Known issues
 
-- Tasks are only partly scoped to their owner: create, get and list use the caller's identity (`task.go`), but update and delete (`task.Store.Update` / `Delete`) take no viewer, so any user can change or delete another user's task by ID. The spec says another user's task is a 404.
 - Account state is not checked in the auth middleware (see above).
 - `writeJSON` in `helpers.go` still prints errors to stderr instead of using the logger, and writes the status twice when marshalling fails (marked `TODO`).
 - The rate limiter keys clients by `RemoteAddr` only (`byIP`), so behind a proxy or Docker network every client shares one bucket; `X-Forwarded-For` is not honoured.

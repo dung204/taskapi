@@ -20,12 +20,12 @@ func TestTaskStore(t *testing.T) {
 	tasktest.TestStore(t, func(t *testing.T) (task.Store, func() uuid.UUID) {
 		t.Helper()
 		pool := newAuthPool(t, url)
-		truncateTable(t, pool, "tasks")
+		truncateTable(t, pool, "task_members, task_invitations, tasks")
 
 		users := NewUserStore(sqlcgen.New(pool))
 		newOwner := func() uuid.UUID { return authtest.SeedUser(t.Context(), t, users).ID }
 
-		return NewTaskStore(pool), newOwner
+		return NewTaskStore(sqlcgen.New(pool)), newOwner
 	})
 }
 

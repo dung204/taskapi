@@ -74,6 +74,12 @@ func (s *server) handleResponseError(l *slog.Logger) func(w http.ResponseWriter,
 		case errors.Is(err, apperr.ErrNotFound):
 			writeError(w, http.StatusNotFound, err.Error())
 
+		case errors.Is(err, apperr.ErrConflict):
+			writeError(w, http.StatusConflict, err.Error())
+
+		case errors.Is(err, apperr.ErrUnprocessable):
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+
 		case errors.Is(err, context.DeadlineExceeded):
 			writeError(w, http.StatusServiceUnavailable, apperr.ErrServiceUnavailable.Error())
 

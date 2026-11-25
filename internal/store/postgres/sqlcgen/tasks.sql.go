@@ -13,9 +13,39 @@ import (
 	"uuid"
 )
 
+const clearTaskAssignee = `-- name: ClearTaskAssignee :execrows
+UPDATE tasks
+SET assignee_id = NULL
+WHERE id = $1
+`
+
+func (q *Queries) ClearTaskAssignee(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearTaskAssignee, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const clearTaskAssigneeIf = `-- name: ClearTaskAssigneeIf :exec
+UPDATE tasks
+SET assignee_id = NULL
+WHERE id = $1 AND assignee_id = $2
+`
+
+type ClearTaskAssigneeIfParams struct {
+	ID         uuid.UUID
+	AssigneeID *uuid.UUID
+}
+
+func (q *Queries) ClearTaskAssigneeIf(ctx context.Context, arg ClearTaskAssigneeIfParams) error {
+	_, err := q.db.Exec(ctx, clearTaskAssigneeIf, arg.ID, arg.AssigneeID)
+	return err
+}
+
 const createTask = `-- name: CreateTask :exec
-INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at, owner_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO tasks (id, title, description, status, due_at, created_at, updated_at, owner_id, assignee_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type CreateTaskParams struct {
@@ -27,6 +57,7 @@ type CreateTaskParams struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	OwnerID     uuid.UUID
+	AssigneeID  *uuid.UUID
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) error {
@@ -39,6 +70,7 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) error {
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.OwnerID,
+		arg.AssigneeID,
 	)
 	return err
 }
@@ -57,34 +89,50 @@ func (q *Queries) DeleteTask(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
-FROM tasks
-WHERE id = $1 AND owner_id = $2
+SELECT
+  t.id, t.title, t.description, t.status, t.due_at, t.created_at, t.updated_at, t.owner_id, t.assignee_id,
+  CASE WHEN t.owner_id = $1 THEN 'owner' ELSE tm.role END::text AS role,
+  u.email AS assignee_email
+FROM tasks AS t
+LEFT JOIN task_members AS tm
+  ON t.id = tm.task_id AND tm.user_id = $1
+LEFT JOIN users AS u ON t.assignee_id = u.id
+WHERE t.id = $2
+  AND (t.owner_id = $1 OR tm.user_id IS NOT NULL)
 `
 
 type GetTaskParams struct {
-	ID      uuid.UUID
-	OwnerID uuid.UUID
+	Viewer uuid.UUID
+	ID     uuid.UUID
 }
 
-func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) {
-	row := q.db.QueryRow(ctx, getTask, arg.ID, arg.OwnerID)
-	var i Task
+type GetTaskRow struct {
+	Task          Task
+	Role          string
+	AssigneeEmail *string
+}
+
+func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (GetTaskRow, error) {
+	row := q.db.QueryRow(ctx, getTask, arg.Viewer, arg.ID)
+	var i GetTaskRow
 	err := row.Scan(
-		&i.ID,
-		&i.Title,
-		&i.Description,
-		&i.Status,
-		&i.DueAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.OwnerID,
+		&i.Task.ID,
+		&i.Task.Title,
+		&i.Task.Description,
+		&i.Task.Status,
+		&i.Task.DueAt,
+		&i.Task.CreatedAt,
+		&i.Task.UpdatedAt,
+		&i.Task.OwnerID,
+		&i.Task.AssigneeID,
+		&i.Role,
+		&i.AssigneeEmail,
 	)
 	return i, err
 }
 
 const getTaskForUpdate = `-- name: GetTaskForUpdate :one
-SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
+SELECT id, title, description, status, due_at, created_at, updated_at, owner_id, assignee_id
 FROM tasks
 WHERE id = $1
 FOR UPDATE
@@ -102,72 +150,53 @@ func (q *Queries) GetTaskForUpdate(ctx context.Context, id uuid.UUID) (Task, err
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OwnerID,
+		&i.AssigneeID,
 	)
 	return i, err
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
-FROM tasks
-WHERE owner_id = $1
-ORDER BY id DESC
-LIMIT $3 OFFSET $2
+SELECT
+  t.id, t.title, t.description, t.status, t.due_at, t.created_at, t.updated_at, t.owner_id, t.assignee_id,
+  CASE WHEN t.owner_id = $1 THEN 'owner' ELSE tm.role END::text AS role,
+  u.email AS assignee_email
+FROM tasks AS t
+LEFT JOIN task_members AS tm
+  ON t.id = tm.task_id AND tm.user_id = $1
+LEFT JOIN users AS u ON t.assignee_id = u.id
+WHERE
+  CASE $2::text
+    WHEN 'owned' THEN t.owner_id = $1
+    WHEN 'shared' THEN tm.user_id IS NOT NULL
+    ELSE (t.owner_id = $1 OR tm.user_id IS NOT NULL)
+  END
+  AND ($3::text IS NULL OR t.status = $3)
+  AND (NOT $4::boolean OR t.assignee_id = $1)
+ORDER BY t.id DESC
+LIMIT $6 OFFSET $5
 `
 
 type ListTasksParams struct {
-	Viewer uuid.UUID
-	Offset int32
-	Limit  int32
+	Viewer       uuid.UUID
+	Scope        string
+	Status       *string
+	AssignedToMe bool
+	Offset       int32
+	Limit        int32
 }
 
-func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasks, arg.Viewer, arg.Offset, arg.Limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Task{}
-	for rows.Next() {
-		var i Task
-		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.Description,
-			&i.Status,
-			&i.DueAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.OwnerID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+type ListTasksRow struct {
+	Task          Task
+	Role          string
+	AssigneeEmail *string
 }
 
-const listTasksByStatus = `-- name: ListTasksByStatus :many
-SELECT id, title, description, status, due_at, created_at, updated_at, owner_id
-FROM tasks
-WHERE status = $1 AND owner_id = $2
-ORDER BY id DESC
-LIMIT $4 OFFSET $3
-`
-
-type ListTasksByStatusParams struct {
-	Status task.Status
-	Viewer uuid.UUID
-	Offset int32
-	Limit  int32
-}
-
-func (q *Queries) ListTasksByStatus(ctx context.Context, arg ListTasksByStatusParams) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasksByStatus,
-		arg.Status,
+func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]ListTasksRow, error) {
+	rows, err := q.db.Query(ctx, listTasks,
 		arg.Viewer,
+		arg.Scope,
+		arg.Status,
+		arg.AssignedToMe,
 		arg.Offset,
 		arg.Limit,
 	)
@@ -175,18 +204,21 @@ func (q *Queries) ListTasksByStatus(ctx context.Context, arg ListTasksByStatusPa
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Task{}
+	items := []ListTasksRow{}
 	for rows.Next() {
-		var i Task
+		var i ListTasksRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.Description,
-			&i.Status,
-			&i.DueAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.OwnerID,
+			&i.Task.ID,
+			&i.Task.Title,
+			&i.Task.Description,
+			&i.Task.Status,
+			&i.Task.DueAt,
+			&i.Task.CreatedAt,
+			&i.Task.UpdatedAt,
+			&i.Task.OwnerID,
+			&i.Task.AssigneeID,
+			&i.Role,
+			&i.AssigneeEmail,
 		); err != nil {
 			return nil, err
 		}
@@ -208,6 +240,25 @@ WHERE status NOT IN ('overdue', 'done')
 
 func (q *Queries) MarkOverdue(ctx context.Context, now time.Time) (int64, error) {
 	result, err := q.db.Exec(ctx, markOverdue, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setTaskAssignee = `-- name: SetTaskAssignee :execrows
+UPDATE tasks
+SET assignee_id = $1
+WHERE id = $2
+`
+
+type SetTaskAssigneeParams struct {
+	AssigneeID *uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) SetTaskAssignee(ctx context.Context, arg SetTaskAssigneeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTaskAssignee, arg.AssigneeID, arg.ID)
 	if err != nil {
 		return 0, err
 	}

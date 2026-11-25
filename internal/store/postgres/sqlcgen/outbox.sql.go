@@ -26,7 +26,7 @@ WHERE id IN (
   LIMIT $3
   FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, kind, to_email, attempts
+RETURNING id, user_id, kind, to_email, attempts, ref_id
 `
 
 type ClaimOutboxItemsParams struct {
@@ -41,6 +41,7 @@ type ClaimOutboxItemsRow struct {
 	Kind     email.Kind
 	ToEmail  string
 	Attempts int32
+	RefID    *uuid.UUID
 }
 
 func (q *Queries) ClaimOutboxItems(ctx context.Context, arg ClaimOutboxItemsParams) ([]ClaimOutboxItemsRow, error) {
@@ -58,6 +59,7 @@ func (q *Queries) ClaimOutboxItems(ctx context.Context, arg ClaimOutboxItemsPara
 			&i.Kind,
 			&i.ToEmail,
 			&i.Attempts,
+			&i.RefID,
 		); err != nil {
 			return nil, err
 		}
@@ -72,8 +74,8 @@ func (q *Queries) ClaimOutboxItems(ctx context.Context, arg ClaimOutboxItemsPara
 const createOutboxItem = `-- name: CreateOutboxItem :exec
 INSERT INTO email_outbox
   (id, user_id, kind, to_email, attempts, next_attempt_at,
-  locked_until, sent_at, failed_at, last_error, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+  locked_until, sent_at, failed_at, last_error, created_at, ref_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 `
 
 type CreateOutboxItemParams struct {
@@ -88,6 +90,7 @@ type CreateOutboxItemParams struct {
 	FailedAt      *time.Time
 	LastError     *string
 	CreatedAt     time.Time
+	RefID         *uuid.UUID
 }
 
 func (q *Queries) CreateOutboxItem(ctx context.Context, arg CreateOutboxItemParams) error {
@@ -103,6 +106,7 @@ func (q *Queries) CreateOutboxItem(ctx context.Context, arg CreateOutboxItemPara
 		arg.FailedAt,
 		arg.LastError,
 		arg.CreatedAt,
+		arg.RefID,
 	)
 	return err
 }

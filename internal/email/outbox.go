@@ -18,12 +18,16 @@ const (
 	// KindAlreadyRegistered tells the owner of an existing account that someone
 	// tried to register with their address. It carries no token.
 	KindAlreadyRegistered Kind = "already_registered"
+	KindTaskInvitation    Kind = "task_invitation"
+	KindTaskAdded         Kind = "task_added"
 )
 
 var allowedKinds = []string{
 	string(KindVerifyEmail),
 	string(KindResetPassword),
 	string(KindAlreadyRegistered),
+	string(KindTaskInvitation),
+	string(KindTaskAdded),
 }
 
 func (k Kind) IsValid() bool {
@@ -42,12 +46,14 @@ type OutboxItem struct {
 	FailedAt      *time.Time
 	LastError     *string
 	CreatedAt     time.Time
+	RefID         *uuid.UUID
 }
 
 type NewOutboxItemParams struct {
 	UserID  uuid.UUID
 	Kind    Kind
 	ToEmail string
+	RefID   *uuid.UUID
 }
 
 func NewOutboxItem(p NewOutboxItemParams, now time.Time) (OutboxItem, error) {
@@ -74,5 +80,6 @@ func NewOutboxItem(p NewOutboxItemParams, now time.Time) (OutboxItem, error) {
 		Attempts:      0,
 		NextAttemptAt: createdAt,
 		CreatedAt:     createdAt,
+		RefID:         p.RefID,
 	}, nil
 }

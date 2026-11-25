@@ -22,6 +22,12 @@ const (
 	LimiterMail  = "mail"
 )
 
+// Limiter names of the task package, the label of task_limiter_fail_open_total.
+const (
+	LimiterInviteMail  = "invite_mail"
+	LimiterInviteOwner = "invite_owner"
+)
+
 const (
 	LoginSuccess            = "success"
 	LoginInvalidCredentials = "invalid_credentials"

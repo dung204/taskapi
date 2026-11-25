@@ -71,7 +71,7 @@ func (db *fakeDB) stores() auth.Stores {
 	}
 }
 
-// WithTx implements [auth.Transactor]. There is no rollback: the tests do not
+// WithTx implements [auth.transactor]. There is no rollback: the tests do not
 // inject failures into a transaction.
 func (db *fakeDB) WithTx(_ context.Context, fn func(auth.Stores) error) error {
 	return fn(db.stores())
@@ -426,7 +426,7 @@ type fakeMailLimiter struct {
 	requests   map[string][]time.Time
 }
 
-var _ auth.MailRequestLimiter = (*fakeMailLimiter)(nil)
+var _ auth.AuthMailLimiter = (*fakeMailLimiter)(nil)
 
 func newFakeMailLimiter(now func() time.Time, maxPerHour int) *fakeMailLimiter {
 	return &fakeMailLimiter{now: now, maxPerHour: maxPerHour, requests: make(map[string][]time.Time)}

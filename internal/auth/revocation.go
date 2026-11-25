@@ -9,8 +9,21 @@ import (
 	"github.com/dung204/taskapi/internal/metrics"
 )
 
+// Revoker rejects access tokens that were issued before they expire. It only
+// needs to remember a revocation for as long as an access token lives.
 type Revoker interface {
+	// RevokeSession makes the access tokens of the session sid invalid.
+	//
+	// Returns the following errors:
+	//   - an error - if the revocation could not be recorded (the fail-open
+	//     wrapper logs and ignores it).
 	RevokeSession(ctx context.Context, sid uuid.UUID) error
+
+	// RevokeUser makes every access token of the user issued before at invalid.
+	//
+	// Returns the following errors:
+	//   - an error - if the revocation could not be recorded (the fail-open
+	//     wrapper logs and ignores it).
 	RevokeUser(ctx context.Context, userID uuid.UUID, at time.Time) error
 }
 

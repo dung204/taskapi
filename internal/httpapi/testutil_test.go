@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -36,11 +37,28 @@ func setupTest(t *testing.T) (h http.Handler, store task.Store, rec *logtest.Rec
 	return h, store, rec
 }
 
+// fakeTx runs the function straight on its stores: the task tests need no
+// real transaction.
+type fakeTx struct{ stores task.Stores }
+
+func (f fakeTx) WithTx(_ context.Context, fn func(task.Stores) error) error {
+	return fn(f.stores)
+}
+
+// newTestService returns a [task.Service] that works on store alone. The task
+// endpoints under test only need the task store; sharing is not wired.
+func newTestService(store task.Store) *task.Service {
+	return task.NewService(task.ServiceDeps{
+		Tx:    fakeTx{task.Stores{Tasks: store}},
+		Tasks: store,
+	})
+}
+
 // newAuthenticatedHandler builds the handler for the task tests; see
 // withTestAuth.
 func newAuthenticatedHandler(t *testing.T, store task.Store, logger *slog.Logger) http.Handler {
 	t.Helper()
-	return withTestAuth(t, HandlerDeps{Tasks: store, Logger: logger})
+	return withTestAuth(t, HandlerDeps{Tasks: newTestService(store), Logger: logger})
 }
 
 // withTestAuth builds a handler from deps with a real token verifier and an

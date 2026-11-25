@@ -12,15 +12,16 @@
 //     left waiting if a notification is lost.
 //
 // The package only depends on small interfaces for what it uses ([OutboxQueue],
-// [MessageBuilder], [Mailer]), so a job never sees a concrete backend. Anything
+// [email.MessageBuilder], [Mailer]), so a job never sees a concrete backend. Anything
 // with a matching Run method can be run alongside them, for example the in-memory
 // rate limiter's cleanup loop.
 package worker
 
 import "context"
 
-// Runner is a background job. Run blocks until ctx is cancelled, so callers
-// start it with go.
+// Runner is a background job.
 type Runner interface {
+	// Run does the job until ctx is cancelled. It blocks, so callers start it
+	// with go.
 	Run(ctx context.Context)
 }

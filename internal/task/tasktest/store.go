@@ -6,25 +6,40 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 	"uuid"
 
-	"github.com/google/go-cmp/cmp/cmpopts"
-
 	"github.com/dung204/taskapi/internal/task"
 )
 
-func checkTasks(t *testing.T, got, want []task.Task) {
+// checkTasks compares the tasks of got with want. The viewer in these tests
+// owns every task they look at, so each access must carry the owner role.
+func checkTasks(t *testing.T, got []task.Access, want []task.Task) {
 	t.Helper()
 
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d", len(got), len(want))
 	}
 	for i := range want {
-		CheckTask(t, got[i], want[i])
+		CheckTask(t, got[i].Task, want[i])
+		if got[i].Role != task.RoleOwner {
+			t.Errorf("role = %q, want %q", got[i].Role, task.RoleOwner)
+		}
 	}
+}
+
+// patchTask applies p to the task with the given id the way a caller does:
+// fetch it with GetForUpdate, apply the patch, persist it with Update.
+func patchTask(ctx context.Context, s task.Store, id uuid.UUID, p task.Patch, now time.Time) error {
+	t, err := s.GetForUpdate(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := t.Patch(p, now); err != nil {
+		return err
+	}
+	return s.Update(ctx, t)
 }
 
 // TestStore runs the behaviour suite. newStoreOwners also returns a function that
@@ -92,10 +107,14 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 	t.Run("Update returns ErrNotFound for unknown id", func(t *testing.T) {
 		s := newStore(t)
 
-		title := "new title"
-		_, err := s.Update(context.Background(), uuid.NewV7(), task.Patch{Title: &title})
+		_, err := s.GetForUpdate(context.Background(), uuid.NewV7())
 		if !errors.Is(err, task.ErrNotFound) {
-			t.Errorf("err = %v, want %v", err, task.ErrNotFound)
+			t.Errorf("GetForUpdate: err = %v, want %v", err, task.ErrNotFound)
+		}
+
+		err = s.Update(context.Background(), task.Task{ID: uuid.NewV7(), Title: "new title", Status: task.StatusTodo})
+		if !errors.Is(err, task.ErrNotFound) {
+			t.Errorf("Update: err = %v, want %v", err, task.ErrNotFound)
 		}
 	})
 
@@ -179,13 +198,13 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		seed(t, s, task.StatusDone, nil)
 		doing = append(doing, seed(t, s, task.StatusDoing, nil))
 
-		got, err := s.List(context.Background(), owner, task.ListFilter{Limit: 10, Status: task.StatusDoing})
+		got, err := s.List(context.Background(), owner, task.ListFilter{Limit: 10, Status: new(task.StatusDoing)})
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
 		checkTasks(t, got, newestFirst(doing))
 
-		got, err = s.List(context.Background(), owner, task.ListFilter{Limit: 10, Status: task.StatusOverdue})
+		got, err = s.List(context.Background(), owner, task.ListFilter{Limit: 10, Status: new(task.StatusOverdue)})
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -209,7 +228,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		CheckTask(t, got, done)
+		CheckTask(t, got.Task, done)
 	})
 
 	t.Run("MarkOverdue updates updated_at", func(t *testing.T) {
@@ -234,7 +253,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		want := created
 		want.Status = task.StatusOverdue
 		want.UpdatedAt = now.UTC().Truncate(time.Microsecond)
-		CheckTask(t, got, want)
+		CheckTask(t, got.Task, want)
 
 		// Already-overdue tasks are not counted or touched again.
 		n, err = s.MarkOverdue(context.Background(), now.Add(time.Hour))
@@ -262,10 +281,10 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		CheckTask(t, got, created)
+		CheckTask(t, got.Task, created)
 	})
 
-	t.Run("Patch concurrent updates do not lose writes", func(t *testing.T) {
+	t.Run("Update persists the patched fields", func(t *testing.T) {
 		s := newStore(t)
 		created := seed(t, s, task.StatusTodo, nil)
 
@@ -273,30 +292,14 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		desc := "new description"
 		status := task.StatusDoing
 		due := base.Add(48 * time.Hour)
+		now := base.Add(time.Minute)
 
-		// Each goroutine patches a different field, so if every write is
-		// applied the final task must contain all of them.
-		patches := []task.Patch{
-			{Title: &title},
-			{Description: &desc},
-			{Status: &status},
-			{DueAt: &due},
-		}
-
-		var wg sync.WaitGroup
-		errs := make(chan error, len(patches))
-		for _, p := range patches {
-			wg.Go(func() {
-				if _, err := s.Update(context.Background(), created.ID, p); err != nil {
-					errs <- err
-				}
-			})
-		}
-		wg.Wait()
-		close(errs)
-
-		for err := range errs {
-			t.Errorf("Update: %v", err)
+		// Each patch changes a different field, so the final task must
+		// contain all of them.
+		for _, p := range []task.Patch{{Title: &title}, {Description: &desc}, {Status: &status}, {DueAt: &due}} {
+			if err := patchTask(context.Background(), s, created.ID, p, now); err != nil {
+				t.Fatalf("patch: %v", err)
+			}
 		}
 
 		got, err := s.Get(context.Background(), owner, created.ID)
@@ -309,8 +312,31 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 		want.Description = desc
 		want.Status = status
 		want.DueAt = &due
+		want.UpdatedAt = now.UTC().Truncate(time.Microsecond)
 
-		CheckTask(t, got, want, cmpopts.IgnoreFields(task.Task{}, "UpdatedAt"))
+		CheckTask(t, got.Task, want)
+	})
+
+	t.Run("Update leaves the owner alone", func(t *testing.T) {
+		s := newStore(t)
+		created := seed(t, s, task.StatusTodo, nil)
+
+		changed := created
+		changed.Title = "new title"
+		changed.OwnerID = newOwner()
+
+		if err := s.Update(context.Background(), changed); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+
+		got, err := s.Get(context.Background(), owner, created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+
+		want := created
+		want.Title = "new title"
+		CheckTask(t, got.Task, want)
 	})
 
 	t.Run("Get hides tasks owned by someone else", func(t *testing.T) {
@@ -340,7 +366,7 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 			want   []task.Task
 		}{
 			{"no status", task.ListFilter{Limit: 10}, newestFirst(mine)},
-			{"with status", task.ListFilter{Limit: 10, Status: task.StatusDoing}, mine[1:]},
+			{"with status", task.ListFilter{Limit: 10, Status: new(task.StatusDoing)}, mine[1:]},
 		}
 
 		for _, tt := range tests {
@@ -364,6 +390,6 @@ func TestStore(t *testing.T, newStoreOwners func(t *testing.T) (task.Store, func
 			t.Fatalf("Get: %v", err)
 		}
 
-		CheckTask(t, got, created)
+		CheckTask(t, got.Task, created)
 	})
 }

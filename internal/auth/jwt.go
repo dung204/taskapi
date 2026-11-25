@@ -41,7 +41,7 @@ func NewJWTService(opts JWTServiceOpts) *JWTService {
 	}
 }
 
-// Issue implements [TokenIssuer].
+// Issue implements [AccessTokenIssuer].
 func (s *JWTService) Issue(userID uuid.UUID, sessionID uuid.UUID, now time.Time) (string, time.Time, error) {
 	expiresAt := now.Add(s.ttl)
 
@@ -63,7 +63,8 @@ func (s *JWTService) Issue(userID uuid.UUID, sessionID uuid.UUID, now time.Time)
 	return signedToken, expiresAt, nil
 }
 
-// Verify implements [TokenVerifier].
+// Verify checks an access token issued by [JWTService.Issue] and returns its
+// [Claims]. It is what the HTTP auth middleware uses to verify tokens.
 func (s *JWTService) Verify(tokenStr string, now time.Time) (Claims, error) {
 	c := &jwtClaims{}
 

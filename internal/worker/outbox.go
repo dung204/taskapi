@@ -12,18 +12,33 @@ import (
 	"github.com/dung204/taskapi/internal/pubsub"
 )
 
+// Mailer delivers emails. It is satisfied by [email.Mailer].
 type Mailer interface {
+	// Send delivers an [email.Message] to its recipient.
+	//
+	// Returns the following errors:
+	//   - an error - if the message is invalid or could not be delivered; the
+	//     worker then retries the item later or gives up on it.
 	Send(ctx context.Context, msg email.Message) error
 }
 
-type MessageBuilder interface {
-	Build(ctx context.Context, item email.ClaimedItem) (email.Message, error)
-}
-
+// OutboxQueue is the part of [email.OutboxStore] the delivery worker uses; see
+// it for the full behavior of each method.
 type OutboxQueue interface {
-	Claim(ctx context.Context, now time.Time, lease time.Duration, limit int32) ([]email.ClaimedItem, error)
+	// Claim leases up to limit due items to the worker until now+lease.
+	//
+	// Returns:
+	//   - items - the claimed [email.ClaimedItem]s.
+	Claim(ctx context.Context, now time.Time, lease time.Duration, limit int32) (items []email.ClaimedItem, err error)
+
+	// MarkSent records that the item was delivered at at.
 	MarkSent(ctx context.Context, id uuid.UUID, at time.Time) error
+
+	// MarkFailed gives up on the item for good, recording lastError.
 	MarkFailed(ctx context.Context, id uuid.UUID, at time.Time, lastError string) error
+
+	// Reschedule makes the item claimable again from nextAttemptAt, recording
+	// lastError.
 	Reschedule(ctx context.Context, id uuid.UUID, nextAttemptAt time.Time, lastError string) error
 }
 
@@ -39,7 +54,7 @@ type OutboxDelivery struct {
 	retryCap    time.Duration
 
 	mailer  Mailer
-	builder MessageBuilder
+	builder email.MessageBuilder
 	outbox  OutboxQueue
 	sub     pubsub.Subscriber
 	topic   string
@@ -59,7 +74,7 @@ type OutboxDeliveryDeps struct {
 	RetryCap    time.Duration
 
 	Mailer  Mailer
-	Builder MessageBuilder
+	Builder email.MessageBuilder
 	Outbox  OutboxQueue
 	// Subscriber and Topic deliver wake-up events (the email_outbox NOTIFY).
 	// Subscriber may be nil, in which case only the poll ticker triggers delivery.

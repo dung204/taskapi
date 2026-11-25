@@ -38,7 +38,7 @@ COVER_LINK_BASE ?= $(if $(GITHUB_REPOSITORY),$(GITHUB_SERVER_URL)/$(GITHUB_REPOS
 # - tasktest, authtest, emailtest, logtest, testutil: test utilities
 # - docs: embedded Swaager (OpenAPI) document
 # - cmd/server/{main,db,logger,pprof}.go: mostly wires libraries up and bootstraps the server
-COVER_EXCLUDE := \.gen\.go|/sqlcgen/|/tasktest/|/authtest/|/emailtest/|/logtest/|/testutil/|/docs/|cmd/server/(main|db|logger|pprof)\.go
+COVER_EXCLUDE := \.gen\.go|/sqlcgen/|/tasktest/|/authtest/|/emailtest/|/logtest/|/testutil/|/docs/|cmd/server/(main|db|logger|pprof)\.go|cmd/seed/
 
 .PHONY: help
 help: ## Show this help
@@ -186,6 +186,10 @@ migrate-down: _require-db ## Roll back the last migration
 .PHONY: migrate-status
 migrate-status: _require-db ## Show migration status
 	go tool goose -dir $(MIGRATIONS_DIR) postgres "$$DATABASE_URL" status
+
+.PHONY: seed
+seed: _require-db ## Truncate all tables and fill them with sample data
+	go run ./cmd/seed
 
 .PHONY: migrate-create
 migrate-create: ## Create a migration: make migrate-create name=add_index

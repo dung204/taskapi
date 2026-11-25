@@ -35,15 +35,15 @@ func BenchmarkToAPITask(b *testing.B) {
 	t := sampleTask()
 
 	for b.Loop() {
-		_ = ToAPITask(t)
+		_ = ToAPITask(task.Access{Task: t, Role: task.RoleOwner})
 	}
 }
 
 func BenchmarkToAPITasks(b *testing.B) {
 	for _, n := range []int{0, 10, 100} {
-		ts := make([]task.Task, n)
+		ts := make([]task.Access, n)
 		for i := range ts {
-			ts[i] = sampleTask()
+			ts[i] = task.Access{Task: sampleTask(), Role: task.RoleOwner}
 		}
 
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {

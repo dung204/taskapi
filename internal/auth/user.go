@@ -2,8 +2,6 @@ package auth
 
 import (
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
 	"unicode/utf8"
 	"uuid"
@@ -11,6 +9,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/dung204/taskapi/internal/apperr"
+	"github.com/dung204/taskapi/internal/email"
 )
 
 type User struct {
@@ -29,13 +28,11 @@ type NewUserParams struct {
 	PasswordHash *string
 }
 
-var emailRegex = regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$`)
-
 func NewUser(params NewUserParams, now time.Time) (User, error) {
 	id := uuid.NewV7()
 	nowUTC := now.UTC().Truncate(time.Microsecond)
 
-	email, err := parseEmail(params.Email)
+	email, err := email.Parse(params.Email)
 	if err != nil {
 		return User{}, fmt.Errorf("%w: %w", apperr.ErrInvalidInput, err)
 	}
@@ -74,14 +71,6 @@ func (u *User) CanLogin() error {
 	default:
 		return nil
 	}
-}
-
-func parseEmail(email string) (string, error) {
-	mail := strings.ToLower(strings.TrimSpace(email))
-	if !emailRegex.MatchString(mail) || len(mail) > 254 {
-		return "", fmt.Errorf("%w: email must be a valid email and have at most 254 characters", ErrInvalidEmail)
-	}
-	return mail, nil
 }
 
 func normalizePassword(password string) (string, error) {

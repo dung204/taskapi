@@ -6,13 +6,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"github.com/dung204/taskapi/internal/auth/authtest"
 	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
 	"github.com/dung204/taskapi/internal/task"
+	"github.com/dung204/taskapi/internal/task/tasktest"
 	"github.com/dung204/taskapi/migrations"
 )
 
@@ -72,8 +76,13 @@ func newPGStore(tb testing.TB, url string, tableName string) task.Store {
 	}
 	tb.Cleanup(func() { pool.Close() })
 
+	// Invitations and members reference tasks, and TRUNCATE refuses to empty a
+	// referenced table unless the referencing ones are truncated with it.
+	if tableName == "tasks" {
+		tableName = "task_members, task_invitations, tasks"
+	}
 	truncateTable(tb, pool, tableName)
-	return NewTaskStore(pool)
+	return NewTaskStore(sqlcgen.New(pool))
 }
 
 // newAuthPool connects to the test database and removes every user except the
@@ -102,4 +111,41 @@ func newAuthPool(tb testing.TB, url string) *pgxpool.Pool {
 func newAuthQueries(tb testing.TB, url string) *sqlcgen.Queries {
 	tb.Helper()
 	return sqlcgen.New(newAuthPool(tb, url))
+}
+
+// newShareDeps gives the invitation and member suites empty stores. It clears
+// tasks (and with them invitations and members) and removes the users of the
+// previous test.
+func newShareDeps(t *testing.T, url string) tasktest.ShareDeps {
+	t.Helper()
+	pool := newAuthPool(t, url)
+	truncateTable(t, pool, "task_members, task_invitations, tasks")
+
+	q := sqlcgen.New(pool)
+	users := NewUserStore(q)
+	tasks := NewTaskStore(q)
+
+	newUser := func() (uuid.UUID, string) {
+		u := authtest.SeedUser(t.Context(), t, users)
+		return u.ID, u.Email
+	}
+	newTask := func() (task.Task, string) {
+		ownerID, ownerEmail := newUser()
+		nt, err := task.New(task.NewParams{Title: "shared task", OwnerID: ownerID, Status: task.StatusTodo}, time.Now())
+		if err != nil {
+			t.Fatalf("task.New: %v", err)
+		}
+		created, err := tasks.Create(t.Context(), nt)
+		if err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+		return created, ownerEmail
+	}
+
+	return tasktest.ShareDeps{
+		Invitations: NewInvitationStore(q),
+		Members:     NewMemberStore(q),
+		NewTask:     newTask,
+		NewUser:     newUser,
+	}
 }

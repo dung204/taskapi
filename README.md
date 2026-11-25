@@ -89,8 +89,11 @@ Settings come from environment variables (see `.env.example`). An empty value co
 | `LOGIN_FREE_ATTEMPTS` | `4`  | Failed logins per email address allowed before the first lock, at least 1 |
 | `LOGIN_BACKOFF`   | `30s,1m,5m,15m` | Lock time after each further failed login, comma-separated durations in whole milliseconds (at least `1ms`). The last value repeats. A locked address gets 429 with `Retry-After`, even for the right password |
 | `LOGIN_WINDOW`    | `1h`     | How long the failed-login counter is kept, renewed by every attempt. At least the longest `LOGIN_BACKOFF` step |
-| `MAIL_REQUEST_COOLDOWN` | `60s` | Minimum time between two verification or password-reset mail requests for the same address, in whole milliseconds (at least `1ms`) |
-| `MAIL_REQUEST_HOURLY_MAX` | `5` | Most such requests per address in one hour, at least 1. Over the limit the endpoint answers 429 with `Retry-After` |
+| `AUTH_MAIL_COOLDOWN` | `60s` | Minimum time between two verification or password-reset mail requests for the same address, in whole milliseconds (at least `1ms`) |
+| `AUTH_MAIL_HOURLY_MAX` | `5` | Most such requests per address in one hour, at least 1. Over the limit the endpoint answers 429 with `Retry-After` |
+| `INVITE_MAIL_COOLDOWN` | `10s` | Minimum time between two task invitation emails to the same address, in whole milliseconds (at least `1ms`) |
+| `INVITE_MAIL_HOURLY_MAX` | `5` | Most invitations per address in one hour, at least 1 |
+| `INVITE_OWNER_HOURLY_MAX` | `30` | Most invitations one task owner may send in one hour, at least 1 |
 | `OUTBOX_LEASE`    | `5m`     | How long a worker owns a claimed batch of queued emails before another may take it. Must be greater than `OUTBOX_BATCH_SIZE * OUTBOX_SEND_TIMEOUT` |
 | `OUTBOX_BATCH_SIZE` | `5`    | Most emails claimed and sent in one batch, at least 1 |
 | `OUTBOX_SEND_TIMEOUT` | `30s` | Time limit for sending one email of a batch, a positive duration |

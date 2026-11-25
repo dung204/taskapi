@@ -3,10 +3,27 @@ package redis
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"fmt"
 	"time"
+	"uuid"
 
 	goredis "github.com/redis/go-redis/v9"
+)
+
+var (
+	//go:embed lua/login_attempt.lua
+	loginAttemptSrc string
+	//go:embed lua/mail_allow.lua
+	mailAllowSrc string
+	//go:embed lua/owner_invite.lua
+	ownerInviteSrc string
+)
+
+var (
+	loginAttemptScript = goredis.NewScript(loginAttemptSrc)
+	mailAllowScript    = goredis.NewScript(mailAllowSrc)
+	ownerInviteScript  = goredis.NewScript(ownerInviteSrc)
 )
 
 type LoginLimiter struct {
@@ -31,26 +48,6 @@ func NewLoginLimiter(client *goredis.Client, opts LoginLimiterOpts) *LoginLimite
 	}
 }
 
-var attemptScript = goredis.NewScript(`
-local lock_ttl = redis.call('PTTL', KEYS[2])
-if lock_ttl > 0 then
-	return lock_ttl
-end
-
-local n = redis.call('INCR', KEYS[1])
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-
-local free = tonumber(ARGV[2])
-local steps = #ARGV - 2
-local idx = n - free
-if idx >= 1 then
-	if idx > steps then idx = steps end
-	redis.call('SET', KEYS[2], '1', 'PX', tonumber(ARGV[2 + idx]))
-end
-
-return 0
-`)
-
 func (l *LoginLimiter) Attempt(ctx context.Context, email string) (wait time.Duration, err error) {
 	h := hashEmail(email)
 	keys := []string{"login:cnt:" + h, "login:lock:" + h}
@@ -59,7 +56,7 @@ func (l *LoginLimiter) Attempt(ctx context.Context, email string) (wait time.Dur
 		args = append(args, v.Milliseconds())
 	}
 
-	ms, err := attemptScript.Run(ctx, l.client, keys, args...).Int64()
+	ms, err := loginAttemptScript.Run(ctx, l.client, keys, args...).Int64()
 	if err != nil {
 		return 0, fmt.Errorf("login limiter attempt: %w", err)
 	}
@@ -78,59 +75,71 @@ func (l *LoginLimiter) Reset(ctx context.Context, email string) error {
 	return nil
 }
 
-type MailRequestLimiter struct {
+type AuthMailLimiter struct {
 	client           *goredis.Client
 	requestCooldown  time.Duration
 	requestHourlyMax int
 }
 
-type MailRequestLimiterOpts struct {
+type AuthMailLimiterOpts struct {
 	RequestCooldown  time.Duration
 	RequestHourlyMax int
 }
 
-func NewMailRequestLimiter(client *goredis.Client, opts MailRequestLimiterOpts) *MailRequestLimiter {
-	return &MailRequestLimiter{
+func NewAuthMailLimiter(client *goredis.Client, opts AuthMailLimiterOpts) *AuthMailLimiter {
+	return &AuthMailLimiter{
 		client:           client,
 		requestCooldown:  opts.RequestCooldown,
 		requestHourlyMax: opts.RequestHourlyMax,
 	}
 }
 
-var allowScript = goredis.NewScript(`
-local cooldownLeft = redis.call('PTTL', KEYS[1])
-if cooldownLeft > 0 then
-	return cooldownLeft
-end
-
-local n = redis.call('INCR', KEYS[2])
-if n == 1 then
-	redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[3]))
-end
-
-if n > tonumber(ARGV[1]) then
-	local left = redis.call('PTTL', KEYS[2])
-	if left < 1 then
-		left = 1
-	end
-	return left
-end
-
-redis.call('SET', KEYS[1], '1', 'PX', tonumber(ARGV[2]))
-return 0
-`)
-
-const mailRequestWindow = time.Hour
+const authMailWindow = time.Hour
 
 // Allow implements [auth.MailRequestLimiter].
-func (l *MailRequestLimiter) Allow(ctx context.Context, email string) (retryAfter time.Duration, err error) {
+func (l *AuthMailLimiter) Allow(ctx context.Context, email string) (retryAfter time.Duration, err error) {
 	h := hashEmail(email)
-	keys := []string{"mail:cool:" + h, "mail:hour:" + h}
-	args := []any{l.requestHourlyMax, l.requestCooldown.Milliseconds(), mailRequestWindow.Milliseconds()}
+	keys := []string{"authmail:cool:" + h, "authmail:hour:" + h}
+	args := []any{l.requestHourlyMax, l.requestCooldown.Milliseconds(), authMailWindow.Milliseconds()}
 
-	ms, err := allowScript.Eval(ctx, l.client, keys, args...).Int64()
+	ms, err := mailAllowScript.Eval(ctx, l.client, keys, args...).Int64()
 	if err != nil {
-		return 0, fmt.Errorf("mail request limiter allow: %w", err)
+		return 0, fmt.Errorf("auth mail limiter allow: %w", err)
+	}
+
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+type InviteMailLimiter struct {
+	client           *goredis.Client
+	requestCooldown  time.Duration
+	requestHourlyMax int
+}
+
+type InviteMailLimiterOpts struct {
+	RequestCooldown  time.Duration
+	RequestHourlyMax int
+}
+
+func NewInviteMailLimiter(client *goredis.Client, opts InviteMailLimiterOpts) *InviteMailLimiter {
+	return &InviteMailLimiter{
+		client:           client,
+		requestCooldown:  opts.RequestCooldown,
+		requestHourlyMax: opts.RequestHourlyMax,
+	}
+}
+
+const inviteMailWindow = time.Hour
+
+// Allow implements [auth.MailRequestLimiter].
+func (l *InviteMailLimiter) Allow(ctx context.Context, email string) (retryAfter time.Duration, err error) {
+	h := hashEmail(email)
+	keys := []string{"invite:cool:" + h, "invite:hour:" + h}
+	args := []any{l.requestHourlyMax, l.requestCooldown.Milliseconds(), inviteMailWindow.Milliseconds()}
+
+	ms, err := mailAllowScript.Eval(ctx, l.client, keys, args...).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("invite mail limiter allow: %w", err)
 	}
 
 	return time.Duration(ms) * time.Millisecond, nil
@@ -139,4 +148,35 @@ func (l *MailRequestLimiter) Allow(ctx context.Context, email string) (retryAfte
 func hashEmail(email string) string {
 	hash := sha256.Sum256([]byte(email))
 	return string(hash[:])
+}
+
+type OwnerInviteLimiter struct {
+	client          *goredis.Client
+	inviteHourlyMax int
+}
+
+type OwnerInviteLimiterOpts struct {
+	InviteHourlyMax int
+}
+
+func NewOwnerInviteLimiter(client *goredis.Client, opts OwnerInviteLimiterOpts) *OwnerInviteLimiter {
+	return &OwnerInviteLimiter{
+		client:          client,
+		inviteHourlyMax: opts.InviteHourlyMax,
+	}
+}
+
+const ownerInviteWindow = time.Hour
+
+// Allow implements [task.OwnerInviteLimiter].
+func (l *OwnerInviteLimiter) Allow(ctx context.Context, owner uuid.UUID) (retryAfter time.Duration, err error) {
+	keys := []string{"invite:owner:" + owner.String()}
+	args := []any{l.inviteHourlyMax, ownerInviteWindow.Milliseconds()}
+
+	ms, err := ownerInviteScript.Run(ctx, l.client, keys, args...).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("owner invite limiter allow: %w", err)
+	}
+
+	return time.Duration(ms) * time.Millisecond, nil
 }

@@ -31,6 +31,29 @@ type Task struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	OwnerID     uuid.UUID
+	AssigneeID  *uuid.UUID
+}
+
+type TaskInvitation struct {
+	ID             uuid.UUID
+	TaskID         uuid.UUID
+	Email          string
+	Role           task.Role
+	AssignOnAccept bool
+	Status         task.InvitationStatus
+	TokenHash      []byte
+	ExpiresAt      time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type TaskMember struct {
+	TaskID       uuid.UUID
+	UserID       uuid.UUID
+	Role         task.Role
+	InvitationID uuid.UUID
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type User struct {

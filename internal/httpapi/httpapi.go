@@ -93,10 +93,11 @@ var _ oapigen.StrictServerInterface = (*server)(nil)
 type Metrics struct {
 	HTTP *metrics.HTTP // nillable
 	Auth *metrics.Auth // nillable
+	Task *metrics.Task // nillable
 }
 
 type HandlerDeps struct {
-	Tasks    task.Store
+	Tasks    *task.Service
 	Auth     *auth.Service
 	Verifier tokenVerifier // verifies access tokens
 	Revoker  revocationChecker
@@ -105,12 +106,12 @@ type HandlerDeps struct {
 	Limiter  Limiter // nillable: no rate limiting
 	CORS     CORSMiddlewareOpts
 	Origins  *OriginPolicy
-	Now      func() time.Time // nillable, defaults to time.Now; the clock for auth
+	Now      func() time.Time // nillable, defaults to time.Now
 }
 
 func NewHandler(deps HandlerDeps) http.Handler {
 	srv := &server{
-		taskHandler: newTaskHandler(deps.Tasks, deps.Logger),
+		taskHandler: newTaskHandler(deps.Tasks, deps.Logger, deps.Now),
 		authHandler: newAuthHandler(deps.Auth, deps.Origins, deps.Logger, deps.Now),
 	}
 

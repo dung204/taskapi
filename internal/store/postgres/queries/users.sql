@@ -36,3 +36,9 @@ UPDATE users
 SET tokens_valid_after = GREATEST(tokens_valid_after, sqlc.arg('at')),
     updated_at = sqlc.arg('at')
 WHERE id = sqlc.arg('id');
+
+-- name: GetVerifiedUserIDByEmail :one
+SELECT id
+FROM users
+WHERE email = $1
+  AND email_verified_at IS NOT NULL;

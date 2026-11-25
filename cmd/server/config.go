@@ -17,39 +17,38 @@ import (
 	"github.com/dung204/taskapi/internal/email"
 )
 
-type db struct{ url, host, name string }
+type dbCfg struct{ url, host, name string }
 type redisCfg struct{ url, host, dbName string }
-type logging struct {
+type loggingCfg struct {
 	format string
 	level  slog.Level
 }
-type tasks struct {
-	store string
+type tasksCfg struct {
 	// the background worker that marks overdue tasks
 	overdueScanEnabled  bool
 	overdueScanInterval time.Duration
 }
-type rateLimit struct {
+type rateLimitCfg struct {
 	rps   float64
 	burst int
 }
-type cors struct {
+type corsCfg struct {
 	origins []string
 	maxAge  time.Duration
 }
-type addrs struct{ pprof, ops string }
+type addrsCfg struct{ pprof, ops string }
 type jwtCfg struct {
 	privateKeyPath, publicKeyPath, issuer string
 	audiences                             []string
 }
-type tokens struct {
+type tokensCfg struct {
 	accessTTL, refreshTTL time.Duration
 	// how long the previous refresh token stays valid after a rotation
 	refreshGrace time.Duration
 	// lifetimes of the one-time tokens sent by email
 	verifyEmailTTL, resetPasswordTTL time.Duration
 }
-type argon2 struct {
+type argon2Cfg struct {
 	time, memoryKiB uint32
 	threads         uint8
 	concurrency     int
@@ -59,10 +58,20 @@ type loginCfg struct {
 	backoff      []time.Duration
 	window       time.Duration
 }
-type mailCfg struct {
+
+// mailLimitCfg is the limiter on emails sent on request, per email address.
+type mailLimitCfg struct {
 	requestCooldown  time.Duration
 	requestHourlyMax int
 }
+
+// inviteOwnerCfg limits how many invitations one task owner may send.
+type inviteOwnerCfg struct {
+	hourlyMax int
+}
+
+type authMailCfg = mailLimitCfg
+type inviteMailCfg = mailLimitCfg
 
 type outboxCfg struct {
 	// lease is how long a claimed batch belongs to one worker before another may take it
@@ -89,22 +98,24 @@ type cleanupCfg struct {
 }
 
 type config struct {
-	port      int
-	tasks     tasks
-	db        db
-	redis     redisCfg
-	logging   logging
-	rateLimit rateLimit
-	cors      cors
-	addrs     addrs
-	jwt       jwtCfg
-	tokens    tokens
-	argon2    argon2
-	login     loginCfg
-	mail      mailCfg
-	smtp      email.SMTPConfig
-	outbox    outboxCfg
-	cleanup   cleanupCfg
+	port        int
+	tasks       tasksCfg
+	db          dbCfg
+	redis       redisCfg
+	logging     loggingCfg
+	rateLimit   rateLimitCfg
+	cors        corsCfg
+	addrs       addrsCfg
+	jwt         jwtCfg
+	tokens      tokensCfg
+	argon2      argon2Cfg
+	login       loginCfg
+	authMail    authMailCfg
+	inviteMail  inviteMailCfg
+	inviteOwner inviteOwnerCfg
+	smtp        email.SMTPConfig
+	outbox      outboxCfg
+	cleanup     cleanupCfg
 	// appBaseURL is the origin the links in emails point at, without a trailing slash.
 	appBaseURL string
 }
@@ -298,8 +309,8 @@ func parseAudiences(raw string) []string {
 	return audiences
 }
 
-func loadDB(lookup lookupFunc) (db, error) {
-	c := db{url: getenv(lookup, "DATABASE_URL", "")}
+func loadDB(lookup lookupFunc) (dbCfg, error) {
+	c := dbCfg{url: getenv(lookup, "DATABASE_URL", "")}
 
 	var err error
 	c.host, c.name, err = parseDBURL(c.url)
@@ -316,10 +327,10 @@ func loadRedis(lookup lookupFunc) (redisCfg, error) {
 	return c, err
 }
 
-func loadLogging(lookup lookupFunc) (logging, error) {
+func loadLogging(lookup lookupFunc) (loggingCfg, error) {
 	var errs []error
 
-	c := logging{format: getenv(lookup, "LOG_FORMAT", "text")}
+	c := loggingCfg{format: getenv(lookup, "LOG_FORMAT", "text")}
 	if c.format != "text" && c.format != "json" {
 		errs = append(errs, fmt.Errorf(`LOG_FORMAT must be either "text" or "json", got %q`, c.format))
 	}
@@ -332,16 +343,12 @@ func loadLogging(lookup lookupFunc) (logging, error) {
 	return c, errors.Join(errs...)
 }
 
-// loadTasks reads which store backs the tasks and the settings of the overdue
-// scan worker. OVERDUE_SCAN_WORKER_INTERVAL is only checked when the worker is
+// loadTasks reads the settings of the overdue scan worker. OVERDUE_SCAN_WORKER_INTERVAL is only checked when the worker is
 // enabled.
-func loadTasks(lookup lookupFunc) (tasks, error) {
+func loadTasks(lookup lookupFunc) (tasksCfg, error) {
 	var errs []error
 
-	c := tasks{store: getenv(lookup, "TASKS_STORE", "memory")}
-	if c.store != "postgres" && c.store != "memory" {
-		errs = append(errs, fmt.Errorf(`TASKS_STORE must be either "memory" or "postgres", got %q`, c.store))
-	}
+	var c tasksCfg
 
 	rawEnabled := getenv(lookup, "OVERDUE_SCAN_WORKER_ENABLED", "true")
 	enabled, err := strconv.ParseBool(rawEnabled)
@@ -364,7 +371,7 @@ func loadTasks(lookup lookupFunc) (tasks, error) {
 
 // loadRateLimit reads the rate limiter settings. RATE_LIMIT_BURST is only
 // checked when rate limiting is enabled (RATE_LIMIT_RPS > 0).
-func loadRateLimit(lookup lookupFunc) (rateLimit, error) {
+func loadRateLimit(lookup lookupFunc) (rateLimitCfg, error) {
 	var errs []error
 
 	rawRPS := getenv(lookup, "RATE_LIMIT_RPS", "10")
@@ -373,7 +380,7 @@ func loadRateLimit(lookup lookupFunc) (rateLimit, error) {
 		errs = append(errs, fmt.Errorf(`RATE_LIMIT_RPS must be a positive float number like 0.5, 1 or set to 0 to disable rate limiting, got %q`, rawRPS))
 	}
 
-	c := rateLimit{rps: rps}
+	c := rateLimitCfg{rps: rps}
 	if c.rps > 0 {
 		rawBurst := getenv(lookup, "RATE_LIMIT_BURST", "20")
 		c.burst, err = strconv.Atoi(rawBurst)
@@ -387,7 +394,7 @@ func loadRateLimit(lookup lookupFunc) (rateLimit, error) {
 
 // loadCORS reads the CORS settings. CORS_MAX_AGE is only checked when
 // CORS_ALLOWED_ORIGINS is set.
-func loadCORS(lookup lookupFunc) (cors, error) {
+func loadCORS(lookup lookupFunc) (corsCfg, error) {
 	var errs []error
 
 	origins, err := parseCORSOrigins(getenv(lookup, "CORS_ALLOWED_ORIGINS", ""))
@@ -395,7 +402,7 @@ func loadCORS(lookup lookupFunc) (cors, error) {
 		errs = append(errs, err)
 	}
 
-	c := cors{origins: origins, maxAge: 10 * time.Minute}
+	c := corsCfg{origins: origins, maxAge: 10 * time.Minute}
 	if len(c.origins) > 0 {
 		rawMaxAge := getenv(lookup, "CORS_MAX_AGE", "10m")
 		c.maxAge, err = time.ParseDuration(rawMaxAge)
@@ -409,10 +416,10 @@ func loadCORS(lookup lookupFunc) (cors, error) {
 
 // loadAddrs reads the listen addresses of the diagnostics servers. An empty
 // PPROF_ADDR means there is no pprof server.
-func loadAddrs(lookup lookupFunc) (addrs, error) {
+func loadAddrs(lookup lookupFunc) (addrsCfg, error) {
 	var errs []error
 
-	c := addrs{
+	c := addrsCfg{
 		pprof: getenv(lookup, "PPROF_ADDR", ""),
 		ops:   getenv(lookup, "OPS_ADDR", "127.0.0.1:9091"),
 	}
@@ -446,9 +453,9 @@ func loadJWT(lookup lookupFunc) (jwtCfg, error) {
 	return c, errors.Join(errs...)
 }
 
-func loadTokens(lookup lookupFunc) (tokens, error) {
+func loadTokens(lookup lookupFunc) (tokensCfg, error) {
 	var errs []error
-	var c tokens
+	var c tokensCfg
 	var err error
 
 	if c.accessTTL, err = getPositiveDuration(lookup, "ACCESS_TTL", "10m"); err != nil {
@@ -483,9 +490,9 @@ func defaultArgon2Concurrency(cpus, threads int) int {
 
 // loadArgon2 reads the Argon2id parameters. cpus only feeds the default of
 // ARGON2_CONCURRENCY.
-func loadArgon2(lookup lookupFunc, cpus int) (argon2, error) {
+func loadArgon2(lookup lookupFunc, cpus int) (argon2Cfg, error) {
 	var errs []error
-	var c argon2
+	var c argon2Cfg
 
 	passes, err := getUint(lookup, "ARGON2_TIME", "3", 1, math.MaxUint32)
 	if err != nil {
@@ -582,24 +589,41 @@ func loadLogin(lookup lookupFunc) (loginCfg, error) {
 	return c, errors.Join(errs...)
 }
 
-// loadMail reads the settings of the limiter on emails sent on request
-// (verification and password reset).
-func loadMail(lookup lookupFunc) (mailCfg, error) {
+// loadMailLimit reads the cooldown and hourly maximum of a mail limiter from
+// the variables prefix+"_COOLDOWN" and prefix+"_HOURLY_MAX".
+func loadMailLimit(lookup lookupFunc, prefix, defaultCooldown, defaultHourlyMax string) (mailLimitCfg, error) {
 	var errs []error
-	var c mailCfg
+	var c mailLimitCfg
 	var err error
 
-	if c.requestCooldown, err = getMillisDuration(lookup, "MAIL_REQUEST_COOLDOWN", "60s"); err != nil {
+	if c.requestCooldown, err = getMillisDuration(lookup, prefix+"_COOLDOWN", defaultCooldown); err != nil {
 		errs = append(errs, err)
 	}
 
-	hourlyMax, err := getUint(lookup, "MAIL_REQUEST_HOURLY_MAX", "5", 1, math.MaxInt32)
+	hourlyMax, err := getUint(lookup, prefix+"_HOURLY_MAX", defaultHourlyMax, 1, math.MaxInt32)
 	if err != nil {
 		errs = append(errs, err)
 	}
 	c.requestHourlyMax = int(hourlyMax)
 
 	return c, errors.Join(errs...)
+}
+
+// loadAuthMail reads the settings of the limiter on auth emails sent on request
+// (verification and password reset).
+func loadAuthMail(lookup lookupFunc) (authMailCfg, error) {
+	return loadMailLimit(lookup, "AUTH_MAIL", "60s", "5")
+}
+
+// loadInviteMail reads the settings of the limiter on task invitation emails.
+func loadInviteMail(lookup lookupFunc) (inviteMailCfg, error) {
+	return loadMailLimit(lookup, "INVITE_MAIL", "10s", "5")
+}
+
+// loadInviteOwner reads the settings of the limiter on invitations sent by one owner.
+func loadInviteOwner(lookup lookupFunc) (inviteOwnerCfg, error) {
+	hourlyMax, err := getUint(lookup, "INVITE_OWNER_HOURLY_MAX", "30", 1, math.MaxInt32)
+	return inviteOwnerCfg{hourlyMax: int(hourlyMax)}, err
 }
 
 // loadSMTP reads the settings of the SMTP server that sends the emails. Host and
@@ -805,7 +829,13 @@ func loadConfig(lookup lookupFunc) (config, error) {
 	c.login, err = loadLogin(lookup)
 	errs = append(errs, err)
 
-	c.mail, err = loadMail(lookup)
+	c.authMail, err = loadAuthMail(lookup)
+	errs = append(errs, err)
+
+	c.inviteMail, err = loadInviteMail(lookup)
+	errs = append(errs, err)
+
+	c.inviteOwner, err = loadInviteOwner(lookup)
 	errs = append(errs, err)
 
 	c.smtp, err = loadSMTP(lookup)

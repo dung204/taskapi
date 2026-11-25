@@ -1,6 +1,7 @@
 package oapigen
 
 import (
+	"cmp"
 	"fmt"
 	"time"
 
@@ -9,7 +10,14 @@ import (
 	"github.com/dung204/taskapi/internal/task"
 )
 
-func ToAPITask(t task.Task) Task {
+func ToAPITask(a task.Access) Task {
+	t := a.Task
+
+	var assignee *Assignee
+	if t.AssigneeID != nil && a.AssigneeEmail != nil {
+		assignee = &Assignee{Id: *t.AssigneeID, Email: *a.AssigneeEmail}
+	}
+
 	return Task{
 		Id:          t.ID,
 		Title:       t.Title,
@@ -18,13 +26,16 @@ func ToAPITask(t task.Task) Task {
 		DueAt:       t.DueAt,
 		CreatedAt:   t.CreatedAt,
 		UpdatedAt:   t.UpdatedAt,
+		OwnerId:     t.OwnerID,
+		Role:        a.Role,
+		Assignee:    assignee,
 	}
 }
 
-func ToAPITasks(ts []task.Task) []Task {
-	apiTasks := make([]Task, len(ts))
-	for i, t := range ts {
-		apiTasks[i] = ToAPITask(t)
+func ToAPITasks(as []task.Access) []Task {
+	apiTasks := make([]Task, len(as))
+	for i, a := range as {
+		apiTasks[i] = ToAPITask(a)
 	}
 	return apiTasks
 }
@@ -100,12 +111,13 @@ func (p ListTasksParams) ToListFilter() (task.ListFilter, error) {
 		offset = *p.Offset
 	}
 
-	var status task.Status
+	var status *task.Status
 	if p.Status != nil && *p.Status != "" {
 		if !p.Status.IsValidForGet() {
 			return task.ListFilter{}, task.ErrInvalidGetStatus
 		}
-		status = *p.Status
+		s := *p.Status
+		status = &s
 	}
 
 	return task.ListFilter{
@@ -147,4 +159,31 @@ func ToAPIUser(u auth.User) User {
 		EmailVerified: u.EmailVerifiedAt != nil,
 		CreatedAt:     u.CreatedAt,
 	}
+}
+
+func (r InviteRequest) ToInviteParams() task.InviteParams {
+	return task.InviteParams{
+		Email:  r.Email,
+		Role:   r.Role,
+		Assign: *cmp.Or(r.Assign, new(false)),
+	}
+}
+
+func ToAPITaskShare(s task.Share) Share {
+	return Share{
+		Id:        s.ID,
+		Kind:      ShareKind(s.Kind),
+		Email:     s.Email,
+		Role:      s.Role,
+		CreatedAt: s.CreatedAt,
+		ExpiresAt: s.ExpiresAt,
+	}
+}
+
+func ToAPITaskShares(ss []task.Share) []Share {
+	apiShares := make([]Share, len(ss))
+	for i, s := range ss {
+		apiShares[i] = ToAPITaskShare(s)
+	}
+	return apiShares
 }

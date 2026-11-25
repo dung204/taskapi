@@ -20,7 +20,6 @@ import (
 	"github.com/dung204/taskapi/internal/httpapi/oapigen"
 	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
-	"github.com/dung204/taskapi/internal/task/tasktest"
 	"github.com/dung204/taskapi/internal/testutil/logtest"
 )
 
@@ -46,8 +45,14 @@ func taskWith(mod func(*task.Task)) task.Task {
 	return t
 }
 
+// ownerAccess is how the store shows t to its owner, the user the tests
+// authenticate as.
+func ownerAccess(t task.Task) task.Access {
+	return task.Access{Task: t, Role: task.RoleOwner}
+}
+
 func apiTaskWith(mod func(*task.Task)) oapigen.Task {
-	return oapigen.ToAPITask(taskWith(mod))
+	return oapigen.ToAPITask(ownerAccess(taskWith(mod)))
 }
 
 func checkAPITask(tb testing.TB, got, want oapigen.Task, opts ...cmp.Option) {
@@ -82,6 +87,8 @@ func TestCreateTask(t *testing.T) {
 				Description: "Task description",
 				Status:      "todo",
 				DueAt:       &dueAt,
+				OwnerId:     testUserID,
+				Role:        task.RoleOwner,
 			},
 		},
 		{
@@ -133,10 +140,10 @@ func TestCreateTask(t *testing.T) {
 type mockCaptureListStore struct {
 	task.Store
 	got   task.ListFilter
-	tasks []task.Task
+	tasks []task.Access
 }
 
-func (s *mockCaptureListStore) List(_ context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Task, error) {
+func (s *mockCaptureListStore) List(_ context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Access, error) {
 	s.got = f
 	return s.tasks, nil
 }
@@ -145,7 +152,6 @@ func defaultListFilter() task.ListFilter {
 	return task.ListFilter{
 		Limit:  20,
 		Offset: 0,
-		Status: task.Status(""),
 	}
 }
 
@@ -163,8 +169,12 @@ func checkListFilter(t *testing.T, got task.ListFilter, want task.ListFilter) {
 	if got.Offset != want.Offset {
 		t.Errorf("offset = %d, want %d", got.Offset, want.Offset)
 	}
-	if got.Status != want.Status {
-		t.Errorf("status = %q, want %q", got.Status, want.Status)
+	switch {
+	case got.Status == nil && want.Status == nil:
+	case got.Status == nil || want.Status == nil:
+		t.Errorf("status = %v, want %v", got.Status, want.Status)
+	case *got.Status != *want.Status:
+		t.Errorf("status = %q, want %q", *got.Status, *want.Status)
 	}
 }
 
@@ -188,7 +198,7 @@ func TestListTasks_Filter(t *testing.T) {
 			wantFilter: task.ListFilter{
 				Limit:  5,
 				Offset: 10,
-				Status: task.StatusDone,
+				Status: new(task.StatusDone),
 			},
 		},
 		{
@@ -237,7 +247,7 @@ func TestListTasks_Filter(t *testing.T) {
 			name:           "status overdue",
 			params:         "?status=overdue",
 			wantStatusCode: http.StatusOK,
-			wantFilter:     listFilterWith(func(lf *task.ListFilter) { lf.Status = task.StatusOverdue }),
+			wantFilter:     listFilterWith(func(lf *task.ListFilter) { lf.Status = new(task.StatusOverdue) }),
 		},
 		{
 			name:            "invalid status",
@@ -362,12 +372,12 @@ type mockGetOneStore struct {
 	found task.Task
 }
 
-func (s mockGetOneStore) Get(_ context.Context, _ uuid.UUID, id uuid.UUID) (task.Task, error) {
+func (s mockGetOneStore) Get(_ context.Context, _ uuid.UUID, id uuid.UUID) (task.Access, error) {
 	if id == s.found.ID {
-		return s.found, nil
+		return ownerAccess(s.found), nil
 	}
 
-	return task.Task{}, task.ErrNotFound
+	return task.Access{}, task.ErrNotFound
 }
 
 func TestGetTask(t *testing.T) {
@@ -394,7 +404,7 @@ func TestGetTask(t *testing.T) {
 			name:           "valid UUID and found",
 			id:             validID.String(),
 			wantStatusCode: http.StatusOK,
-			wantTask:       new(oapigen.ToAPITask(defaultTask())),
+			wantTask:       new(oapigen.ToAPITask(ownerAccess(defaultTask()))),
 		},
 	}
 
@@ -424,17 +434,15 @@ func TestGetTask(t *testing.T) {
 
 type mockCaptureUpdateStore struct {
 	task.Store
-	called   bool
-	gotID    uuid.UUID
-	gotPatch task.Patch
+	called bool
+	got    task.Task
 }
 
-func (s *mockCaptureUpdateStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (task.Task, error) {
+func (s *mockCaptureUpdateStore) Update(ctx context.Context, t task.Task) error {
 	s.called = true
-	s.gotID = id
-	s.gotPatch = p
+	s.got = t
 
-	return s.Store.Update(ctx, id, p)
+	return s.Store.Update(ctx, t)
 }
 
 func TestUpdateTask(t *testing.T) {
@@ -444,8 +452,6 @@ func TestUpdateTask(t *testing.T) {
 		body            string
 		wantStatusCode  int
 		wantCalled      bool
-		wantID          uuid.UUID
-		wantPatch       task.Patch
 		wantTask        *oapigen.Task
 		wantErrContains []string
 	}{
@@ -502,8 +508,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"title":"new"}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{Title: new("new")},
 			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Title = "new" })),
 		},
 		{
@@ -512,8 +516,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"description":""}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{Description: new("")},
 			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Description = "" })),
 		},
 		{
@@ -522,8 +524,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"due_at":"2026-12-31T10:00:00Z"}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{DueAt: new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))},
 			wantTask: new(apiTaskWith(func(t *task.Task) {
 				t.DueAt = new(time.Date(2026, 12, 31, 10, 0, 0, 0, time.UTC))
 			})),
@@ -535,8 +535,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"due_at":"2026-12-31T10:00:00+07:00"}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{DueAt: new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))},
 			wantTask: new(apiTaskWith(func(t *task.Task) {
 				t.DueAt = new(time.Date(2026, 12, 31, 3, 0, 0, 0, time.UTC))
 			})),
@@ -547,8 +545,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"status":"todo"}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{Status: new(task.StatusTodo)},
 			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusTodo })),
 		},
 		{
@@ -557,8 +553,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"status":"doing"}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{Status: new(task.StatusDoing)},
 			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusDoing })),
 		},
 		{
@@ -567,8 +561,6 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{"status":"done"}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{Status: new(task.StatusDone)},
 			wantTask:       new(apiTaskWith(func(t *task.Task) { t.Status = task.StatusDone })),
 		},
 		{
@@ -577,17 +569,14 @@ func TestUpdateTask(t *testing.T) {
 			body:           `{}`,
 			wantStatusCode: http.StatusOK,
 			wantCalled:     true,
-			wantID:         validID,
-			wantPatch:      task.Patch{},
-			wantTask:       new(oapigen.ToAPITask(defaultTask())),
+			wantTask:       new(oapigen.ToAPITask(ownerAccess(defaultTask()))),
 		},
 		{
 			name:            "valid id but not found",
 			id:              notFoundID.String(),
 			body:            `{}`,
 			wantStatusCode:  http.StatusNotFound,
-			wantCalled:      true,
-			wantID:          notFoundID,
+			wantCalled:      false,
 			wantErrContains: []string{"not found"},
 		},
 		{
@@ -595,9 +584,7 @@ func TestUpdateTask(t *testing.T) {
 			id:              validID.String(),
 			body:            `{"title":""}`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      true,
-			wantID:          validID,
-			wantPatch:       task.Patch{Title: new("")},
+			wantCalled:      false,
 			wantErrContains: []string{"title", "at least 1", "at most 200", "characters"},
 		},
 		{
@@ -605,9 +592,7 @@ func TestUpdateTask(t *testing.T) {
 			id:              validID.String(),
 			body:            `{"status":"bogus"}`,
 			wantStatusCode:  http.StatusBadRequest,
-			wantCalled:      true,
-			wantID:          validID,
-			wantPatch:       task.Patch{Status: new(task.Status("bogus"))},
+			wantCalled:      false,
 			wantErrContains: []string{"status", "invalid"},
 		},
 	}
@@ -632,14 +617,6 @@ func TestUpdateTask(t *testing.T) {
 
 			if s.called != tt.wantCalled {
 				t.Fatalf("called = %t, want %t", s.called, tt.wantCalled)
-			}
-
-			if s.gotID != tt.wantID {
-				t.Fatalf("ID = %v, want %v", s.gotID, tt.wantID)
-			}
-
-			if hasError := tasktest.CheckPatch(t, s.gotPatch, tt.wantPatch); hasError {
-				t.FailNow()
 			}
 
 			if tt.wantTask != nil {
@@ -689,8 +666,7 @@ func TestDeleteTask(t *testing.T) {
 			name:            "valid ID but not found",
 			id:              notFoundID.String(),
 			wantStatusCode:  http.StatusNotFound,
-			wantCalled:      true,
-			wantID:          notFoundID,
+			wantCalled:      false,
 			wantErrContains: []string{"not found"},
 		},
 		{
@@ -744,6 +720,154 @@ func TestDeleteTask(t *testing.T) {
 	}
 }
 
+// mockRoleStore shows every task to the caller with role, and records writes.
+type mockRoleStore struct {
+	task.Store
+	role    task.Role
+	updated bool
+	deleted bool
+}
+
+func (s *mockRoleStore) Get(context.Context, uuid.UUID, uuid.UUID) (task.Access, error) {
+	return task.Access{Task: defaultTask(), Role: s.role}, nil
+}
+
+func (s *mockRoleStore) GetForUpdate(context.Context, uuid.UUID) (task.Task, error) {
+	return defaultTask(), nil
+}
+
+func (s *mockRoleStore) Update(context.Context, task.Task) error {
+	s.updated = true
+	return nil
+}
+
+func (s *mockRoleStore) Delete(context.Context, uuid.UUID) error {
+	s.deleted = true
+	return nil
+}
+
+func TestTaskRolePermissions(t *testing.T) {
+	tests := []struct {
+		name            string
+		role            task.Role
+		method          string
+		body            any
+		wantStatusCode  int
+		wantWritten     bool // the store was updated or deleted
+		wantRole        task.Role
+		wantErrContains []string
+	}{
+		{name: "viewer gets the task", role: task.RoleViewer, method: http.MethodGet, wantStatusCode: http.StatusOK, wantRole: task.RoleViewer},
+		{name: "editor gets the task", role: task.RoleEditor, method: http.MethodGet, wantStatusCode: http.StatusOK, wantRole: task.RoleEditor},
+
+		{
+			name: "viewer cannot edit content", role: task.RoleViewer, method: http.MethodPatch,
+			body: `{"title":"new"}`, wantStatusCode: http.StatusForbidden, wantErrContains: []string{"cannot edit"},
+		},
+		{
+			name: "viewer cannot change status", role: task.RoleViewer, method: http.MethodPatch,
+			body: `{"status":"done"}`, wantStatusCode: http.StatusForbidden, wantErrContains: []string{"cannot change the status"},
+		},
+		{
+			name: "contributor cannot edit content", role: task.RoleContributor, method: http.MethodPatch,
+			body: `{"description":"new"}`, wantStatusCode: http.StatusForbidden, wantErrContains: []string{"cannot edit"},
+		},
+		{
+			name: "contributor can change status", role: task.RoleContributor, method: http.MethodPatch,
+			body: `{"status":"done"}`, wantStatusCode: http.StatusOK, wantWritten: true, wantRole: task.RoleContributor,
+		},
+		{
+			name: "editor can edit content", role: task.RoleEditor, method: http.MethodPatch,
+			body: `{"title":"new"}`, wantStatusCode: http.StatusOK, wantWritten: true, wantRole: task.RoleEditor,
+		},
+		{
+			// One forbidden field rejects the whole patch.
+			name: "contributor patching content and status is rejected", role: task.RoleContributor, method: http.MethodPatch,
+			body: `{"title":"new","status":"done"}`, wantStatusCode: http.StatusForbidden, wantErrContains: []string{"cannot edit"},
+		},
+
+		{
+			name: "viewer cannot delete", role: task.RoleViewer, method: http.MethodDelete,
+			wantStatusCode: http.StatusForbidden, wantErrContains: []string{"only the owner"},
+		},
+		{
+			name: "manager cannot delete", role: task.RoleManager, method: http.MethodDelete,
+			wantStatusCode: http.StatusForbidden, wantErrContains: []string{"only the owner"},
+		},
+		{name: "owner can delete", role: task.RoleOwner, method: http.MethodDelete, wantStatusCode: http.StatusNoContent, wantWritten: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &mockRoleStore{role: tt.role}
+			h, _ := setupTestWithStore(t, s)
+			rec, req := prepareTestRequest(t, tt.method, "/tasks/"+validID.String(), tt.body)
+			h.ServeHTTP(rec, req)
+
+			res := rec.Result()
+			defer res.Body.Close()
+
+			if res.StatusCode != tt.wantStatusCode {
+				t.Fatalf("status code = %d, want %d", res.StatusCode, tt.wantStatusCode)
+			}
+
+			if written := s.updated || s.deleted; written != tt.wantWritten {
+				t.Errorf("store written = %t, want %t", written, tt.wantWritten)
+			}
+
+			if tt.wantStatusCode >= 400 {
+				checkErrorMesssage(t, getErrorMessageFromResponseBody(t, res.Body), tt.wantErrContains)
+				return
+			}
+
+			if tt.wantRole != "" {
+				if got := decodeResponseBody[oapigen.Task](t, res.Body).Role; got != tt.wantRole {
+					t.Errorf("role = %q, want %q", got, tt.wantRole)
+				}
+			}
+		})
+	}
+}
+
+// TestTaskOfAnotherUser checks that a task the caller cannot see is a 404 for
+// every operation, and that update and delete leave it alone.
+func TestTaskOfAnotherUser(t *testing.T) {
+	other := taskWith(func(tk *task.Task) { tk.OwnerID = uuid.MustParse("01a142fd-186e-7169-95c2-a186f9103a99") })
+
+	for _, method := range []string{http.MethodGet, http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			store := memory.NewTaskStore()
+			if _, err := store.Create(t.Context(), other); err != nil {
+				t.Fatalf("seed task: %v", err)
+			}
+
+			var body any
+			if method == http.MethodPatch {
+				body = `{"title":"hijacked"}`
+			}
+
+			h, _ := setupTestWithStore(t, store)
+			rec, req := prepareTestRequest(t, method, "/tasks/"+other.ID.String(), body)
+			h.ServeHTTP(rec, req)
+
+			res := rec.Result()
+			defer res.Body.Close()
+
+			if res.StatusCode != http.StatusNotFound {
+				t.Fatalf("status code = %d, want %d", res.StatusCode, http.StatusNotFound)
+			}
+
+			got, err := store.GetForUpdate(t.Context(), other.ID)
+			if err != nil {
+				t.Fatalf("task is gone after %s: %v", method, err)
+			}
+			if got.Title != other.Title {
+				t.Errorf("title = %q, want %q (unchanged)", got.Title, other.Title)
+			}
+		})
+	}
+}
+
 type mockFailingStore struct {
 	task.Store
 	err error
@@ -757,16 +881,16 @@ func (s mockFailingStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.err
 }
 
-func (s mockFailingStore) Get(ctx context.Context, _ uuid.UUID, id uuid.UUID) (task.Task, error) {
-	return task.Task{}, s.err
+func (s mockFailingStore) Get(ctx context.Context, _ uuid.UUID, id uuid.UUID) (task.Access, error) {
+	return task.Access{}, s.err
 }
 
-func (s mockFailingStore) List(ctx context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Task, error) {
-	return []task.Task{}, s.err
+func (s mockFailingStore) List(ctx context.Context, _ uuid.UUID, f task.ListFilter) ([]task.Access, error) {
+	return []task.Access{}, s.err
 }
 
-func (s mockFailingStore) Update(ctx context.Context, id uuid.UUID, p task.Patch) (task.Task, error) {
-	return task.Task{}, s.err
+func (s mockFailingStore) Update(ctx context.Context, t task.Task) error {
+	return s.err
 }
 
 func TestHandleStoreError(t *testing.T) {

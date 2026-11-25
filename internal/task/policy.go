@@ -24,8 +24,11 @@ const (
 	RoleViewer      Role = "viewer"
 )
 
-var grantableRoles = []Role{
-	RoleManager, RoleEditor, RoleContributor, RoleViewer,
+var grantableRoles = []string{
+	string(RoleManager),
+	string(RoleEditor),
+	string(RoleContributor),
+	string(RoleViewer),
 }
 
 var rolePerms = map[Role]Permission{
@@ -41,7 +44,7 @@ func (r Role) Can(p Permission) bool {
 }
 
 func (r Role) IsGrantable() bool {
-	return slices.Contains(grantableRoles, r)
+	return slices.Contains(grantableRoles, string(r))
 }
 
 func RequiredForPatch(p Patch) Permission {

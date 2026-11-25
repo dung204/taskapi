@@ -99,18 +99,18 @@ func setupAuthTest(t *testing.T) *authEnv {
 		UserTokens:         fakeUserTokens{db},
 		Users:              fakeUsers{db},
 		Outbox:             fakeOutbox{db},
-		Issuer:             jwtService,
+		AccessTokenIssuer:  jwtService,
 		Hasher:             fakeHasher{},
 		Revoker:            revoker,
 		LoginLimiter:       newFakeLoginLimiter(clock.Now, 5, time.Minute),
-		MailRequestLimiter: newFakeMailLimiter(clock.Now, 5),
+		AuthMailLimiter:    newFakeMailLimiter(clock.Now, 5),
 	})
 	if err != nil {
 		t.Fatalf("new auth service: %v", err)
 	}
 
 	h := NewHandler(HandlerDeps{
-		Tasks:    memory.NewTaskStore(),
+		Tasks:    newTestService(memory.NewTaskStore()),
 		Auth:     service,
 		Verifier: jwtService,
 		Revoker:  revoker,

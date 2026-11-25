@@ -21,7 +21,7 @@ type panicStore struct {
 	task.Store
 }
 
-func (s panicStore) Get(context.Context, uuid.UUID, uuid.UUID) (task.Task, error) {
+func (s panicStore) Get(context.Context, uuid.UUID, uuid.UUID) (task.Access, error) {
 	panic("boom")
 }
 
@@ -39,13 +39,13 @@ func (f *fakeLimiter) Allow(key string) (bool, time.Duration) {
 func setupTestWithLimiter(t *testing.T, store task.Store, l Limiter) http.Handler {
 	t.Helper()
 	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-	return withTestAuth(t, HandlerDeps{Tasks: store, Logger: logger, Limiter: l})
+	return withTestAuth(t, HandlerDeps{Tasks: newTestService(store), Logger: logger, Limiter: l})
 }
 
 func setupTestWithCORS(t *testing.T, store task.Store, l Limiter, opts CORSMiddlewareOpts) http.Handler {
 	t.Helper()
 	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-	return withTestAuth(t, HandlerDeps{Tasks: store, Logger: logger, Limiter: l, CORS: opts})
+	return withTestAuth(t, HandlerDeps{Tasks: newTestService(store), Logger: logger, Limiter: l, CORS: opts})
 }
 
 func TestHandler(t *testing.T) {
@@ -210,7 +210,7 @@ func TestHandler(t *testing.T) {
 		reg := prometheus.NewRegistry()
 		logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
 		h := withTestAuth(t, HandlerDeps{
-			Tasks:   memory.NewTaskStore(),
+			Tasks:   newTestService(memory.NewTaskStore()),
 			Logger:  logger,
 			Metrics: Metrics{HTTP: metrics.NewHTTP(reg)},
 			Limiter: &fakeLimiter{ok: false},
