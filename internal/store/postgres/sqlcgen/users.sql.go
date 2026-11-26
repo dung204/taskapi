@@ -92,6 +92,21 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getVerifiedUserIDByEmail = `-- name: GetVerifiedUserIDByEmail :one
+SELECT id
+FROM users
+WHERE email = $1
+  AND email_verified_at IS NOT NULL
+  AND disabled_at IS NULL
+`
+
+func (q *Queries) GetVerifiedUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getVerifiedUserIDByEmail, email)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const setTokensValidAfterForUser = `-- name: SetTokensValidAfterForUser :execrows
 UPDATE users
 SET tokens_valid_after = GREATEST(tokens_valid_after, $1),

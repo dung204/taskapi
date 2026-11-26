@@ -13,6 +13,15 @@ info:
     `POST /auth/login`. Only the endpoints under `/auth` that start a session or
     prove an email address are public; every other endpoint needs a token.
 
+    Sharing: the owner of a task can share it with other people, each with one of
+    four roles (`viewer`, `contributor`, `editor`, `manager`; see `Role`). A caller
+    who cannot see a task at all gets 404, whether or not the task exists; a
+    caller who can see it but whose role lacks the permission gets 403. Checks run
+    in this order: 401, 429 (client IP), 400 for a path or JSON body that cannot be
+    read, 404, 403, and only then the values in the request (400, 422, 409, and the
+    owner's invitation limit, 429). A caller who is not allowed to do something
+    therefore never learns whether the values they sent were valid.
+
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -27,6 +36,8 @@ tags:
     description: The authenticated user
   - name: tasks
     description: Task CRUD
+  - name: sharing
+    description: Sharing a task with other people (members, invitations) and its assignee
 
 paths:
   /auth/register:
@@ -1157,11 +1168,17 @@ paths:
       tags: [tasks]
       operationId: listTasks
       summary: List tasks
-      description: Newest first (ordered by `id` descending, IDs are UUIDv7).
+      description: |
+        The tasks the caller owns and the tasks shared with the caller, newest
+        first (ordered by `id` descending, IDs are UUIDv7). Every task carries the
+        caller's `role` on it. Narrow the list with `scope`, `assignee` and
+        `status`; they combine.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
         - $ref: "#/components/parameters/StatusFilter"
+        - $ref: "#/components/parameters/ScopeFilter"
+        - $ref: "#/components/parameters/AssigneeFilter"
       responses:
         "200":
           description: A page of tasks. An empty page is `[]`, never `null`.
@@ -1176,6 +1193,8 @@ paths:
             - `limit` is not an integer, or is lower than 1 (a value above 100 is clamped, not an error)
             - `offset` is not an integer, or is negative
             - `status` is not one of `todo`, `doing`, `done`, `overdue` (an empty `status=` means no filter)
+            - `scope` is not one of `all`, `owned`, `shared` (an empty `scope=` means `all`)
+            - `assignee` is not `me` (an empty `assignee=` means no filter)
           content:
             application/json:
               schema:
@@ -1201,6 +1220,14 @@ paths:
                   summary: "`status` is not a known status"
                   value:
                     error: "invalid input: status must be one of the following: todo, doing, done, overdue"
+                scopeNotAllowed:
+                  summary: "`scope` is not a known scope"
+                  value:
+                    error: "invalid input: scope must be one of the following: all, owned, shared"
+                assigneeNotAllowed:
+                  summary: "`assignee` is not `me`"
+                  value:
+                    error: "invalid input: assignee must be one of the following: me"
         "401":
           description: |
             The access token is not accepted. Every case gets the same message and the
@@ -1248,6 +1275,7 @@ paths:
       tags: [tasks]
       operationId: createTask
       summary: Create a task
+      description: The caller becomes the owner of the task.
       requestBody:
         required: true
         content:
@@ -1363,6 +1391,10 @@ paths:
       tags: [tasks]
       operationId: getTask
       summary: Get one task
+      description: |
+        Any role that can see the task can read it: the owner and every member.
+        `role` is the caller's role, so an app can hide what the caller cannot do;
+        the server checks the permission again on every request.
       parameters:
         - $ref: "#/components/parameters/TaskId"
       responses:
@@ -1407,15 +1439,15 @@ paths:
                     error: "unauthorized"
         "404":
           description: |
-            No task has this `id`, or the task belongs to another user (the two cases are
-            not told apart).
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               examples:
                 taskNotFound:
-                  summary: "Unknown id, or someone else's task"
+                  summary: "Unknown id, or a task the caller cannot see"
                   value:
                     error: "task: not found"
         "429":
@@ -1447,7 +1479,19 @@ paths:
       description: |
         Only the fields present in the body are changed. `updated_at` moves only
         when a field actually changes. The update is atomic: if any field is
-        invalid, nothing is changed.
+        invalid, or the caller's role does not allow one of them, nothing is
+        changed.
+
+        What the caller's role must allow depends on the fields sent: `status`
+        needs `contributor` or better; `title`, `description` and `due_at` need
+        `editor` or better; a body with both kinds needs `editor` or better (a
+        contributor who sends `status` together with `title` gets 403 for the
+        whole request). An empty object `{}` changes nothing and needs nothing
+        beyond being able to see the task.
+
+        Permission is checked before the values are validated, so a caller who is
+        not allowed gets 403 even when a value is also invalid. A body that cannot
+        be decoded at all is rejected with 400 first.
       parameters:
         - $ref: "#/components/parameters/TaskId"
       requestBody:
@@ -1543,17 +1587,39 @@ paths:
                   summary: "Any of the cases above"
                   value:
                     error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but their role does not allow what the body
+            asks for. Nothing is changed, even for the fields the role would allow.
+            When the role allows neither kind, the message is the one for `title`,
+            `description` and `due_at`.
+
+            - `title`, `description` or `due_at` needs `editor` or better
+            - `status` needs `contributor` or better
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                cannotEditContent:
+                  summary: "The body has `title`, `description` or `due_at`, and the caller is a viewer or a contributor"
+                  value:
+                    error: "forbidden: your role cannot edit this task"
+                cannotChangeStatus:
+                  summary: "The body has `status`, and the caller is a viewer"
+                  value:
+                    error: "forbidden: your role cannot change the status of this task"
         "404":
           description: |
-            No task has this `id`, or the task belongs to another user (the two cases are
-            not told apart).
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               examples:
                 taskNotFound:
-                  summary: "Unknown id, or someone else's task"
+                  summary: "Unknown id, or a task the caller cannot see"
                   value:
                     error: "task: not found"
         "429":
@@ -1620,19 +1686,1365 @@ paths:
                   summary: "Any of the cases above"
                   value:
                     error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but is not its owner. Only the owner can delete a
+            task, whatever role the caller has.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                ownerOnly:
+                  summary: "The caller is a member, not the owner"
+                  value:
+                    error: "forbidden: only the owner can delete this task"
         "404":
           description: |
-            No task has this `id`, or the task belongs to another user (the two cases are
-            not told apart).
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               examples:
                 taskNotFound:
-                  summary: "Unknown id, or someone else's task"
+                  summary: "Unknown id, or a task the caller cannot see"
                   value:
                     error: "task: not found"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}/shares:
+    get:
+      tags: [sharing]
+      operationId: listShares
+      summary: List who a task is shared with
+      description: |
+        Lists everyone with a part in the task except its owner: the members, who
+        have access, and the pending invitations, who have none yet. Every role can
+        call it (a `viewer` too), so everybody on a task sees the email addresses of
+        everybody else, pending invitations included. That is on purpose.
+
+        Ordered by `created_at`, oldest first. An invitation that was accepted,
+        declined or cancelled is not listed, and neither is a pending one past its
+        `expires_at`. A task has at most 50 members and its owner at most 200 pending
+        invitations in all, so the list is short and is not paginated.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: The members and the pending invitations. `[]` when the task is shared with nobody.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Share"
+              examples:
+                shared:
+                  summary: One member and one pending invitation
+                  value:
+                    - kind: member
+                      id: 0192f5a1-7c3e-7b1a-8d2f-5e6a7b8c9d01
+                      email: an@example.com
+                      role: editor
+                      created_at: "2026-11-16T09:30:00Z"
+                    - kind: invitation
+                      id: 0192f5a2-1f4b-7c2d-9a3e-6f7b8c9d0e12
+                      email: binh@example.com
+                      role: viewer
+                      created_at: "2026-11-16T10:05:00Z"
+                      expires_at: "2026-12-16T10:05:00Z"
+                notShared:
+                  summary: The task is not shared with anybody
+                  value: []
+        "400":
+          description: |
+            The `id` in the path is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "404":
+          description: |
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}/invitations:
+    post:
+      tags: [sharing]
+      operationId: inviteToTask
+      summary: Share a task with an email address
+      description: |
+        Owner only. What happens depends on the email address:
+
+        - It belongs to a **verified account**: that user becomes a member at once,
+          with no step on their side, and gets an email saying so (no token in it).
+          The answer is a `Share` of kind `member`.
+        - Otherwise (no account, or an account whose email is not verified yet): a
+          pending invitation is created and an email with a link is sent. Nothing is
+          shared until the recipient signs in with that address and accepts
+          (`POST /invitations/accept`). The answer is a `Share` of kind `invitation`,
+          valid for 30 days.
+
+        So the owner can tell which addresses have a verified account. That is on
+        purpose, and the limits below make probing many addresses slow. Email
+        addresses are compared case-insensitively.
+
+        `assign: true` also makes the person the assignee: at once for a member added
+        directly (replacing the current assignee), when the invitation is accepted
+        otherwise (replacing whoever is the assignee then).
+
+        A 201 means the share was recorded, not that an email was delivered: mail is
+        sent in the background, and an address that received several mails from this
+        service in a short time gets none for this share (the share still succeeds).
+        To change the role of a pending invitation, cancel it and invite again; the
+        new email carries a new token and the old link stops working. A pending
+        invitation past its `expires_at` no longer counts, so the address can be
+        invited again.
+
+        Checks run in this order, which decides the status code:
+
+        1. The client IP limit: 429.
+        2. A path or body that cannot be read: 400.
+        3. The task: 404 when the caller cannot see it, 403 when the caller is not its owner.
+        4. The values in the body: 400 for the email, 422 for the role.
+        5. The email is the owner's own: 422.
+        6. The address is already a member, or already has a pending invitation: 409.
+        7. The task already has 50 members, or the owner already has 200 pending invitations: 422.
+        8. The owner's hourly invitation limit: 429. Only a request that passed every
+           check before it counts, so a request rejected with 400, 409 or 422 uses up nothing.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteRequest"
+      responses:
+        "201":
+          description: |
+            The share that was created: `member` when the address has a verified account
+            (the person already has access), `invitation` otherwise.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+              examples:
+                memberAdded:
+                  summary: The address has a verified account, so the person is added at once
+                  value:
+                    kind: member
+                    id: 0192f5a1-7c3e-7b1a-8d2f-5e6a7b8c9d01
+                    email: an@example.com
+                    role: editor
+                    created_at: "2026-11-16T09:30:00Z"
+                invitationSent:
+                  summary: The address has no verified account, so an invitation is pending
+                  value:
+                    kind: invitation
+                    id: 0192f5a2-1f4b-7c2d-9a3e-6f7b8c9d0e12
+                    email: binh@example.com
+                    role: viewer
+                    created_at: "2026-11-16T10:05:00Z"
+                    expires_at: "2026-12-16T10:05:00Z"
+        "400":
+          description: |
+            Nothing is shared:
+
+            - the `id` in the path is not a valid UUID
+            - the body is missing, is not valid JSON, is not an object, or a field has the wrong type
+            - `email` is missing, not a valid address, or longer than 254 characters (after trimming)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`email` is not of the type the schema says"
+                  value:
+                    error: "field \"email\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                invalidEmail:
+                  summary: "The email is missing, not a valid address, or longer than 254 characters (after trimming)"
+                  value:
+                    error: "invalid input: invalid email: email must be a valid email and have at most 254 characters"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but is not its owner. Inviting people, cancelling
+            invitations, changing roles and removing members belong to the owner alone, and
+            no role can be given this right.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                ownerOnly:
+                  summary: "The caller is a member, not the owner"
+                  value:
+                    error: "forbidden: only the owner can manage who a task is shared with"
+        "404":
+          description: |
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+        "409":
+          description: |
+            Checked after the email is known to be valid and is not the owner's:
+
+            - the address already belongs to a member of the task
+            - the address already has a pending invitation to the task that has not expired yet
+
+            The owner can see both in `GET /tasks/{id}/shares`, so this reveals nothing new.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                alreadyMember:
+                  summary: "The address is already a member of the task"
+                  value:
+                    error: "conflict: this person is already a member of the task"
+                alreadyInvited:
+                  summary: "The address already has a pending invitation to the task"
+                  value:
+                    error: "conflict: this email already has a pending invitation for the task"
+        "422":
+          description: |
+            The body is well-formed but cannot be acted on. Nothing is shared:
+
+            - `role` is missing, empty, `owner` (it cannot be granted) or not a known role
+            - `email` is the owner's own address
+            - the task already has 50 members (the owner is not counted, pending invitations are not counted)
+            - the owner already has 200 pending invitations, counted over all of their tasks (a member added directly does not use this budget)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidRole:
+                  summary: "`role` is missing, empty, `owner` or not a known role"
+                  value:
+                    error: "unprocessable: role must be one of the following: viewer, contributor, editor, manager"
+                ownEmail:
+                  summary: "The email is the owner's own address"
+                  value:
+                    error: "unprocessable: you cannot invite yourself"
+                memberLimit:
+                  summary: "The task already has 50 members"
+                  value:
+                    error: "unprocessable: a task can have at most 50 members"
+                pendingLimit:
+                  summary: "The owner already has 200 pending invitations"
+                  value:
+                    error: "unprocessable: you can have at most 200 pending invitations"
+        "429":
+          description: |
+            - the client IP exceeded the request rate limit that applies to every endpoint
+              (token bucket per IP; IPv6 addresses are grouped by their /64)
+            - the owner already made 30 invitations in the last hour (the number is
+              configurable). Members added directly and pending invitations both count,
+              and removing a member does not give one back. It is checked last, so only a
+              request that would otherwise have succeeded uses it up.
+
+            Wait at least `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+                tooManyInvitations:
+                  summary: "The owner reached the hourly invitation limit (same message, so a client needs only one rule for 429)"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}/invitations/{invitationId}:
+    delete:
+      tags: [sharing]
+      operationId: cancelInvitation
+      summary: Cancel a pending invitation
+      description: |
+        Owner only. The invitation stops working at once: the link in the email no
+        longer accepts. Only a pending invitation that has not expired can be
+        cancelled. Someone who already accepted is a member; remove them with
+        `DELETE /tasks/{id}/members/{userId}`.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/InvitationId"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            - the `id` in the path is not a valid UUID
+            - the `invitationId` in the path is not a valid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+                invalidInvitationId:
+                  summary: "The `invitationId` in the path is not a UUID"
+                  value:
+                    error: "invalid invitationId"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but is not its owner. Inviting people, cancelling
+            invitations, changing roles and removing members belong to the owner alone, and
+            no role can be given this right.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                ownerOnly:
+                  summary: "The caller is a member, not the owner"
+                  value:
+                    error: "forbidden: only the owner can manage who a task is shared with"
+        "404":
+          description: |
+            - no task has this `id`, or the caller cannot see it: not its owner and not a
+              member of it (the two cases are not told apart)
+            - the task has no pending invitation with this `invitationId`: it does not
+              exist, belongs to another task, or was already accepted, declined,
+              cancelled or has expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+                invitationNotFound:
+                  summary: "No such pending invitation on this task"
+                  value:
+                    error: "invitation: not found"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}/members/me:
+    delete:
+      tags: [sharing]
+      operationId: leaveTask
+      summary: Leave a shared task
+      description: |
+        Any member can leave, whatever their role; no permission is needed. They stop
+        seeing the task, and if they were its assignee the task has no assignee
+        afterwards. The owner is not a member and cannot leave; an owner who wants
+        the task gone deletes it with `DELETE /tasks/{id}`.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            The `id` in the path is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "404":
+          description: |
+            - no task has this `id`, or the caller cannot see it (the two cases are not told apart)
+            - the caller is the owner of the task, who is not a member and cannot leave
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+                ownerCannotLeave:
+                  summary: "The caller owns the task, so there is no membership to end"
+                  value:
+                    error: "member: not found"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}/members/{userId}:
+    patch:
+      tags: [sharing]
+      operationId: changeMemberRole
+      summary: Change a member's role
+      description: |
+        Owner only. Takes effect on the member's next request. It does not change who
+        the assignee is. Sending the role the member already has is not an error. A
+        pending invitation has no role to change here: cancel it and invite again.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/MemberUserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeRoleRequest"
+      responses:
+        "200":
+          description: The member after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+              examples:
+                changed:
+                  summary: The member is now a manager
+                  value:
+                    kind: member
+                    id: 0192f5a1-7c3e-7b1a-8d2f-5e6a7b8c9d01
+                    email: an@example.com
+                    role: manager
+                    created_at: "2026-11-16T09:30:00Z"
+        "400":
+          description: |
+            - the `id` or the `userId` in the path is not a valid UUID
+            - the body is missing, is not valid JSON, is not an object, or `role` has the wrong type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+                invalidUserId:
+                  summary: "The `userId` in the path is not a UUID"
+                  value:
+                    error: "invalid userId"
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`role` is not of the type the schema says"
+                  value:
+                    error: "field \"role\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but is not its owner. Inviting people, cancelling
+            invitations, changing roles and removing members belong to the owner alone, and
+            no role can be given this right.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                ownerOnly:
+                  summary: "The caller is a member, not the owner"
+                  value:
+                    error: "forbidden: only the owner can manage who a task is shared with"
+        "404":
+          description: |
+            - no task has this `id`, or the caller cannot see it (the two cases are not told apart)
+            - the task has no member with this `userId`. This includes the owner, who is not a member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+                memberNotFound:
+                  summary: "Not a member of this task"
+                  value:
+                    error: "member: not found"
+        "422":
+          description: |
+            `role` is missing, empty, `owner` (it cannot be granted) or not a known role. Nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidRole:
+                  summary: "`role` is missing, empty, `owner` or not a known role"
+                  value:
+                    error: "unprocessable: role must be one of the following: viewer, contributor, editor, manager"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    delete:
+      tags: [sharing]
+      operationId: removeMember
+      summary: Remove a member
+      description: |
+        Owner only. The member stops seeing the task on their next request. If they
+        were the assignee, the task has no assignee afterwards. To remove yourself
+        as a member, use `DELETE /tasks/{id}/members/me`.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+        - $ref: "#/components/parameters/MemberUserId"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            - the `id` in the path is not a valid UUID
+            - the `userId` in the path is not a valid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+                invalidUserId:
+                  summary: "The `userId` in the path is not a UUID"
+                  value:
+                    error: "invalid userId"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but is not its owner. Inviting people, cancelling
+            invitations, changing roles and removing members belong to the owner alone, and
+            no role can be given this right.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                ownerOnly:
+                  summary: "The caller is a member, not the owner"
+                  value:
+                    error: "forbidden: only the owner can manage who a task is shared with"
+        "404":
+          description: |
+            - no task has this `id`, or the caller cannot see it (the two cases are not told apart)
+            - the task has no member with this `userId`. This includes the owner, who is not a member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+                memberNotFound:
+                  summary: "Not a member of this task"
+                  value:
+                    error: "member: not found"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /tasks/{id}/assignee:
+    put:
+      tags: [sharing]
+      operationId: setAssignee
+      summary: Set the assignee of a task
+      description: |
+        Needs `manager` or `owner`. A task has at most one assignee, who replaces
+        the current one. The assignee must be the owner or a member (the owner can
+        assign themselves); to assign someone who has no access yet, invite them
+        with `assign: true`. Being the assignee gives no permission of its own: what
+        the person can do on the task is decided by their role alone.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssigneeRequest"
+      responses:
+        "200":
+          description: The task after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: |
+            - the `id` in the path is not a valid UUID
+            - the body is missing, is not valid JSON, is not an object, or `email` has the wrong type
+            - `email` is missing, not a valid address, or longer than 254 characters (after trimming)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`email` is not of the type the schema says"
+                  value:
+                    error: "field \"email\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                invalidEmail:
+                  summary: "The email is missing, not a valid address, or longer than 254 characters (after trimming)"
+                  value:
+                    error: "invalid input: invalid email: email must be a valid email and have at most 254 characters"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but their role cannot assign it. Setting and
+            clearing the assignee needs `manager` or `owner`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                cannotAssign:
+                  summary: "The caller is a viewer, a contributor or an editor"
+                  value:
+                    error: "forbidden: your role cannot assign this task"
+        "404":
+          description: |
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+        "422":
+          description: |
+            The address is valid but is neither the owner's nor a member's. This includes
+            a person whose invitation is still pending: they have no access yet. The
+            assignee is not changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                notOwnerOrMember:
+                  summary: "The email belongs to nobody on the task"
+                  value:
+                    error: "unprocessable: the assignee must be the owner or a member of the task"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+    delete:
+      tags: [sharing]
+      operationId: clearAssignee
+      summary: Clear the assignee of a task
+      description: |
+        Needs `manager` or `owner`. Answers 204 whether or not the task had an assignee.
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            The `id` in the path is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidId:
+                  summary: "The `id` in the path is not a UUID"
+                  value:
+                    error: "invalid id"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "403":
+          description: |
+            The caller can see the task but their role cannot assign it. Setting and
+            clearing the assignee needs `manager` or `owner`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                cannotAssign:
+                  summary: "The caller is a viewer, a contributor or an editor"
+                  value:
+                    error: "forbidden: your role cannot assign this task"
+        "404":
+          description: |
+            No task has this `id`, or the caller cannot see it: not its owner and not a
+            member of it (the two cases are not told apart).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                taskNotFound:
+                  summary: "Unknown id, or a task the caller cannot see"
+                  value:
+                    error: "task: not found"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /invitations/accept:
+    post:
+      tags: [sharing]
+      operationId: acceptInvitation
+      summary: Accept an invitation
+      description: |
+        The link in the invitation email opens a page of the web or mobile app, which
+        calls this endpoint with the token in the body. Like `POST /auth/verify-email`
+        it is a POST on purpose: mail scanners follow links and would use up the
+        token behind a GET.
+
+        The caller must be signed in with the email address the invitation was sent
+        to (a signed-in user's email is always verified). The caller becomes a
+        member with the invited role and, if the invitation had `assign: true`, the
+        assignee of the task, replacing the current one. The invitation is used up.
+
+        The task is not visible to the invited person before this: the email is all
+        they have.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationTokenRequest"
+      responses:
+        "200":
+          description: The task, with `role` set to the role that was granted, so an app can open it straight away
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: |
+            - the body is missing, is not valid JSON, is not an object, or `token` has the wrong type
+            - the token is empty, longer than 128 characters, or cannot be one the server issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`token` is not of the type the schema says"
+                  value:
+                    error: "field \"token\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                tokenMalformed:
+                  summary: "The token is empty, longer than 128 characters, or is not what the server issues (not 43 URL-safe base64 characters)"
+                  value:
+                    error: "token is invalid"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "404":
+          description: |
+            The invitation cannot be used by this caller. Every case gets the same message,
+            so the answer never says why, and so a token that was guessed or leaked to the
+            wrong person reveals nothing:
+
+            - no pending invitation matches the token: it is unknown, or the invitation was already accepted, declined or cancelled
+            - the invitation has expired (30 days after it was created)
+            - the invitation was sent to another email address than the one the caller signed in with
+            - the task was deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invitationNotFoundOrExpired:
+                  summary: "Any of the cases above. All of them give this one message, so the answer never says why"
+                  value:
+                    error: "invitation not found or expired"
+        "409":
+          description: |
+            The token is valid and belongs to the caller, but the task already has 50
+            members, so there is no room. The caller is entitled to know the task exists,
+            since the invitation was addressed to them. The invitation stays pending; it
+            can be accepted once the owner makes room, and until it expires.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                memberLimit:
+                  summary: "The task already has 50 members"
+                  value:
+                    error: "conflict: the task has reached its member limit"
+        "429":
+          description: |
+            The client IP exceeded the request rate limit that applies to every endpoint
+            (token bucket per IP; IPv6 addresses are grouped by their /64). Wait at least
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooManyRequests:
+                  summary: "Rate limit hit"
+                  value:
+                    error: "too many requests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /invitations/decline:
+    post:
+      tags: [sharing]
+      operationId: declineInvitation
+      summary: Decline an invitation
+      description: |
+        The same conditions as `POST /invitations/accept`: the caller must be signed
+        in with the email address the invitation was sent to, and the token must
+        belong to a pending invitation that has not expired. The invitation is
+        closed and its link stops working. The owner is not told.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationTokenRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/NoContent"
+        "400":
+          description: |
+            - the body is missing, is not valid JSON, is not an object, or `token` has the wrong type
+            - the token is empty, longer than 128 characters, or cannot be one the server issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bodyMissing:
+                  summary: "The request has no body"
+                  value:
+                    error: "request body is required"
+                bodyMalformedJson:
+                  summary: "The body is cut off or is not JSON"
+                  value:
+                    error: "request body contains malformed JSON"
+                fieldWrongType:
+                  summary: "`token` is not of the type the schema says"
+                  value:
+                    error: "field \"token\" has the wrong type"
+                bodyMalformedJsonAt:
+                  summary: "A syntax error in the JSON; the offset is the byte position of the error"
+                  value:
+                    error: "request body contains malformed JSON (at position 9)"
+                bodyNotAnObject:
+                  summary: "Valid JSON, but not an object (for example an array or a string)"
+                  value:
+                    error: "request body must be a JSON object"
+                bodyUnreadable:
+                  summary: "Any other decoding failure"
+                  value:
+                    error: "invalid request body"
+                tokenMalformed:
+                  summary: "The token is empty, longer than 128 characters, or is not what the server issues (not 43 URL-safe base64 characters)"
+                  value:
+                    error: "token is invalid"
+        "401":
+          description: |
+            The access token is not accepted. Every case gets the same message and the
+            `WWW-Authenticate: Bearer` header, so the answer never says why:
+
+            - there is no `Authorization` header, its scheme is not `Bearer`, or the token is empty
+            - the token is not a JWT, is signed with another key, has the wrong issuer or audience, or has expired
+            - the token's session was revoked (logout, logout-all, a password change or reset, or reuse of an old refresh token) or it was issued before the user's last "sign out everywhere"
+            - the user no longer exists
+          headers:
+            WWW-Authenticate:
+              $ref: "#/components/headers/WWWAuthenticate"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  summary: "Any of the cases above"
+                  value:
+                    error: "unauthorized"
+        "404":
+          description: |
+            The invitation cannot be used by this caller. Every case gets the same message,
+            so the answer never says why, and so a token that was guessed or leaked to the
+            wrong person reveals nothing:
+
+            - no pending invitation matches the token: it is unknown, or the invitation was already accepted, declined or cancelled
+            - the invitation has expired (30 days after it was created)
+            - the invitation was sent to another email address than the one the caller signed in with
+            - the task was deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invitationNotFoundOrExpired:
+                  summary: "Any of the cases above. All of them give this one message, so the answer never says why"
+                  value:
+                    error: "invitation not found or expired"
         "429":
           description: |
             The client IP exceeded the request rate limit that applies to every endpoint
@@ -1704,6 +3116,47 @@ components:
       schema:
         $ref: "#/components/schemas/Status"
 
+    InvitationId:
+      name: invitationId
+      in: path
+      required: true
+      description: Invitation ID (UUID)
+      schema:
+        $ref: "#/components/schemas/InvitationId"
+
+    MemberUserId:
+      name: userId
+      in: path
+      required: true
+      description: ID (UUID) of the member's user account. It is the `id` of a `Share` of kind `member`.
+      schema:
+        $ref: "#/components/schemas/UserId"
+
+    ScopeFilter:
+      name: scope
+      in: query
+      required: false
+      description: |
+        Which tasks to list: `owned` (the caller is the owner), `shared` (the
+        caller is a member), or `all` (both, the default). An empty `scope=` means
+        `all`; any other value is rejected with 400.
+      schema:
+        type: string
+        enum: [all, owned, shared]
+        default: all
+
+    AssigneeFilter:
+      name: assignee
+      in: query
+      required: false
+      description: |
+        `me` keeps only the tasks assigned to the caller. It can be combined with
+        `scope` and `status`. An empty `assignee=` means no filter; any other value
+        is rejected with 400.
+      schema:
+        type: string
+        enum: [me]
+
     RefreshTokenCookie:
       name: refresh_token
       in: cookie
@@ -1755,7 +3208,7 @@ components:
 
     Task:
       type: object
-      required: [id, title, description, status, due_at, created_at, updated_at]
+      required: [id, title, description, status, due_at, created_at, updated_at, owner_id, assignee, role]
       properties:
         id:
           $ref: "#/components/schemas/TaskId"
@@ -1777,6 +3230,19 @@ components:
         updated_at:
           type: string
           format: date-time
+        owner_id:
+          $ref: "#/components/schemas/UserId"
+          description: The user who created the task. It never changes.
+        assignee:
+          description: The user the task is assigned to, `null` when it is assigned to nobody.
+          oneOf:
+            - $ref: "#/components/schemas/Assignee"
+            - type: "null"
+        role:
+          $ref: "#/components/schemas/Role"
+          description: |
+            The caller's role on this task (`owner` for the caller's own tasks). It is for
+            the app, for example to hide a button; the server checks every request again.
 
     CreateTaskRequest:
       type: object
@@ -1979,6 +3445,136 @@ components:
         created_at:
           type: string
           format: date-time
+
+    InvitationId:
+      type: string
+      format: uuid
+      description: UUIDv7, generated by the server.
+      x-go-type: uuid.UUID
+      x-go-type-import:
+        path: uuid
+
+    Role:
+      type: string
+      enum: [viewer, contributor, editor, manager, owner]
+      description: |
+        The caller's role on a task. Each role can do everything the one before
+        it can:
+
+        - `viewer`: see the task and the list of who it is shared with
+        - `contributor`: also change the `status`
+        - `editor`: also change `title`, `description` and `due_at`
+        - `manager`: also set and clear the assignee
+        - `owner`: also delete the task and manage who it is shared with
+
+        `owner` is whoever created the task. It cannot be granted or
+        transferred, so only the other four can be given to somebody
+        (`GrantableRole`). Being the assignee adds nothing to a role.
+      x-go-type: task.Role
+      x-go-type-import:
+        path: github.com/dung204/taskapi/internal/task
+
+    GrantableRole:
+      type: string
+      enum: [viewer, contributor, editor, manager]
+      description: The roles an owner can give to somebody. `owner` is not one of them.
+      x-go-type: task.Role
+      x-go-type-import:
+        path: github.com/dung204/taskapi/internal/task
+
+    Assignee:
+      type: object
+      required: [id, email]
+      description: The user a task is assigned to. Assigning gives no permission by itself.
+      properties:
+        id:
+          $ref: "#/components/schemas/UserId"
+        email:
+          $ref: "#/components/schemas/Email"
+
+    Share:
+      type: object
+      required: [kind, id, email, role, created_at]
+      description: |
+        One line of the list of who a task is shared with: a **member**, who has
+        access, or a **pending invitation**, who has none yet. The server never
+        returns a token.
+      properties:
+        kind:
+          type: string
+          enum: [member, invitation]
+          description: |
+            `member` for somebody who has access (an invitation that was accepted
+            or a person added directly), `invitation` for an invitation that is
+            still waiting.
+        id:
+          type: string
+          format: uuid
+          description: |
+            For a `member`, the user's ID (the `userId` of
+            `/tasks/{id}/members/{userId}`). For an `invitation`, the invitation's
+            ID (the `invitationId` of `/tasks/{id}/invitations/{invitationId}`).
+          x-go-type: uuid.UUID
+          x-go-type-import:
+            path: uuid
+        email:
+          $ref: "#/components/schemas/Email"
+        role:
+          $ref: "#/components/schemas/GrantableRole"
+        created_at:
+          type: string
+          format: date-time
+          description: When the member was added, or when the invitation was made.
+        expires_at:
+          type: string
+          format: date-time
+          description: Only when `kind` is `invitation`. The invitation stops working at this time.
+
+    InviteRequest:
+      type: object
+      required: [email, role]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+        role:
+          $ref: "#/components/schemas/GrantableRole"
+          description: Required. `owner` is rejected with 422.
+        assign:
+          type: boolean
+          default: false
+          description: Optional. `true` also makes the person the assignee (see the operation).
+
+    ChangeRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/GrantableRole"
+          description: Required. `owner` is rejected with 422.
+
+    AssigneeRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+          description: The address of the owner or of a member of the task.
+
+    InvitationToken:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: |
+        The token from the invitation email, as it is in the link. It is a
+        single-use secret: 43 URL-safe base64 characters.
+      x-go-type: string
+
+    InvitationTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          $ref: "#/components/schemas/InvitationToken"
 
     Error:
       type: object

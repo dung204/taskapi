@@ -11,11 +11,10 @@ The package doc in `httpapi.go` describes the request pipeline, authentication a
 - **Refresh tokens rotate** (logic in `auth.Service.Refresh`; the handler only maps results). The answer follows where the token came from: body token to body, cookie token to cookie only. A grace-period answer carries no refresh token. Logout and logout-all always answer 204 and clear the cookie, even for an invalid token.
 - **CORS is the outermost middleware**: it must stay first in `r.Use` so preflights are answered before the router (they would be 405), the rate limiter and the logging, and so every response, including `429` and recovered panics, carries the CORS headers. The cost is that preflights are not logged or counted in metrics. Set response headers before `WriteHeader`, or they are never sent.
 - **Wrapping `http.ResponseWriter`**: wrappers like `statusRecorder` must keep an `Unwrap() http.ResponseWriter` method so `http.ResponseController` still reaches the real writer.
-- **Auth tests** use `setupAuthTest` with a fake clock (`e.Advance`) and the fakes in `authfakes_test.go`. Revocation compares seconds, so a test that revokes tokens must `e.Advance(time.Second)` after issuing them, or the tokens are not revoked. Keep request counts under the per-IP limit (`rateLimitProbes`).
+- **Auth tests** use `setupAuthTest`: real Postgres stores (users, sessions, tokens, outbox) and a fake clock (`e.Advance`), revoker, limiters, hasher and mailer in `authfakes_test.go`. Every environment has its own addresses (`e.email`, `e.addr("bob")`), so tests run in parallel on one database: never hard-code an address that is stored (`rejectedEmail` is only for requests that fail validation). Revocation compares seconds, so a test that revokes tokens must `e.Advance(time.Second)` after issuing them, or the tokens are not revoked. Keep request counts under the per-IP limit (`rateLimitProbes`).
 
 ## Known issues
 
-- Tasks are not scoped to their owner yet: `task.go` never reads the identity, although `OwnerID` exists in the domain and the spec says another user's task is a 404.
 - Account state is not checked in the auth middleware (see above).
 - `writeJSON` in `helpers.go` still prints errors to stderr instead of using the logger, and writes the status twice when marshalling fails (marked `TODO`).
 - The rate limiter keys clients by `RemoteAddr` only (`byIP`), so behind a proxy or Docker network every client shares one bucket; `X-Forwarded-For` is not honoured.

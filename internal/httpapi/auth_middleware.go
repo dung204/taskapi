@@ -16,12 +16,33 @@ import (
 	"github.com/dung204/taskapi/internal/metrics"
 )
 
+// revocationChecker tells whether an access token was revoked (see
+// [auth.Revoker]).
 type revocationChecker interface {
-	Check(ctx context.Context, sid, userID uuid.UUID, iat time.Time) (bool, error)
+	// Check looks up the revocations of the session sid and of the user.
+	//
+	// Returns:
+	//   - revoked - whether a token of the session, issued at iat, was revoked,
+	//     either with its session or with all tokens of the user issued before
+	//     the user's cutoff.
+	//
+	// Returns the following errors:
+	//   - an error - if the revocation backend could not be read.
+	Check(ctx context.Context, sid, userID uuid.UUID, iat time.Time) (revoked bool, err error)
 }
 
+// tokenVerifier checks access tokens.
 type tokenVerifier interface {
-	Verify(token string, now time.Time) (auth.Claims, error)
+	// Verify checks the signature, issuer, audience and expiry of token at now.
+	//
+	// Returns:
+	//   - claims - the [auth.Claims] of the token: user, session and issue time.
+	//
+	// Returns the following errors:
+	//   - [auth.ErrExpiredToken] - if the token has expired.
+	//   - [auth.ErrInvalidToken] - if the token is malformed, wrongly signed, for
+	//     another issuer or audience, or lacks a valid user, session or time.
+	Verify(token string, now time.Time) (claims auth.Claims, err error)
 }
 
 type Identity struct {

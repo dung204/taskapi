@@ -117,11 +117,9 @@ func (s *SessionStore) Rotate(ctx context.Context, id uuid.UUID, oldHash, newHas
 
 func sessionFromRow(r sqlcgen.Session) auth.Session {
 	s := auth.Session(r)
-	s.ExpiresAt = s.ExpiresAt.UTC()
-	s.CreatedAt = s.CreatedAt.UTC()
-	if s.RotatedAt != nil {
-		s.RotatedAt = new(s.RotatedAt.UTC())
-	}
+	s.ExpiresAt = utc(s.ExpiresAt)
+	s.CreatedAt = utc(s.CreatedAt)
+	s.RotatedAt = utcPtr(s.RotatedAt)
 
 	return s
 }

@@ -48,7 +48,6 @@ services:
       target: server
     environment:
       PORT: "8080"
-      TASKS_STORE: postgres
       DATABASE_URL: postgres://${POSTGRES_USER:-taskapi}:${POSTGRES_PASSWORD:-taskapi}@db:5432/${POSTGRES_DB:-taskapi}?sslmode=disable
       REDIS_URL: redis://:${REDIS_PASSWORD:-taskapi}@redis:6379/0
       LOG_FORMAT: json
@@ -70,8 +69,11 @@ services:
       LOGIN_FREE_ATTEMPTS: 4
       LOGIN_BACKOFF: 30s,1m,5m,15m
       LOGIN_WINDOW: 1h
-      MAIL_REQUEST_COOLDOWN: 60s
-      MAIL_REQUEST_HOURLY_MAX: 5
+      AUTH_MAIL_COOLDOWN: 60s
+      AUTH_MAIL_HOURLY_MAX: 5
+      INVITE_MAIL_COOLDOWN: 10s
+      INVITE_MAIL_HOURLY_MAX: 5
+      INVITE_OWNER_HOURLY_MAX: 30
       APP_BASE_URL: http://localhost:5173 # replace this to the frontend origin if available
       VERIFY_EMAIL_TOKEN_TTL: 24h
       RESET_PASSWORD_TOKEN_TTL: 1h

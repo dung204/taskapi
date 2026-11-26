@@ -160,8 +160,8 @@ func TestMailRequestLimiter(t *testing.T) {
 	ctx := t.Context()
 
 	const cooldown = 500 * time.Millisecond
-	newLimiter := func(hourlyMax int) *MailRequestLimiter {
-		return NewMailRequestLimiter(client, MailRequestLimiterOpts{
+	newLimiter := func(hourlyMax int) *AuthMailLimiter {
+		return NewAuthMailLimiter(client, AuthMailLimiterOpts{
 			RequestCooldown:  cooldown,
 			RequestHourlyMax: hourlyMax,
 		})
@@ -206,7 +206,7 @@ func TestMailRequestLimiter(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantWait(t, wait, mailRequestWindow)
+		wantWait(t, wait, authMailWindow)
 	})
 
 	t.Run("emails are limited independently", func(t *testing.T) {

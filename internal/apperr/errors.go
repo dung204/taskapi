@@ -12,4 +12,6 @@ var (
 	ErrInternalServerError = errors.New("internal server error")
 	ErrUnauthorized        = errors.New("unauthorized")
 	ErrTooManyRequests     = errors.New("too many requests")
+	ErrConflict            = errors.New("conflict")
+	ErrUnprocessable       = errors.New("unprocessable")
 )

@@ -1,8 +1,8 @@
 -- name: CreateOutboxItem :exec
 INSERT INTO email_outbox
   (id, user_id, kind, to_email, attempts, next_attempt_at,
-  locked_until, sent_at, failed_at, last_error, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+  locked_until, sent_at, failed_at, last_error, created_at, ref_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 
 -- name: ClaimOutboxItems :many
 UPDATE email_outbox
@@ -17,7 +17,7 @@ WHERE id IN (
   LIMIT sqlc.arg('limit')
   FOR UPDATE SKIP LOCKED
 )
-RETURNING id, user_id, kind, to_email, attempts;
+RETURNING id, user_id, kind, to_email, attempts, ref_id;
 
 -- name: DeleteSentOutboxItems :execrows
 DELETE FROM email_outbox

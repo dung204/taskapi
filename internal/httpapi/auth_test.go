@@ -21,13 +21,16 @@ import (
 
 	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/ratelimit"
-	"github.com/dung204/taskapi/internal/store/memory"
+	"github.com/dung204/taskapi/internal/store/postgres"
+	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
 )
+
+// rejectedEmail is for requests that fail validation, so it is never stored.
+const rejectedEmail = "rejected@example.com"
 
 const (
 	testPassword    = "correct horse battery"
 	testNewPassword = "new password 123"
-	testEmail       = "alice@example.com"
 )
 
 // Kinds of emails the fake mailer records.
@@ -54,6 +57,11 @@ type authEnv struct {
 	// AllowedOrigin is an origin the server accepts in cookie mode.
 	AllowedOrigin string
 
+	// email is the address of the test's main user. Every environment has its
+	// own addresses (see addr), so tests can share one database.
+	email string
+	tag   string
+
 	// AddUser inserts a user with a hashed password directly into the store.
 	AddUser func(tb testing.TB, email, password string, st userState) auth.User
 	// Mails returns, oldest first, the emails sent to the address so far.
@@ -67,8 +75,14 @@ type authEnv struct {
 	ForgeToken func(tb testing.TB, userID uuid.UUID, kind string) string
 }
 
-// setupAuthTest builds a handler backed by in-memory stores, a fake mailer and
-// a controllable clock. Rate limits should be small enough that the tests
+// addr returns the address name@... made unique to this environment, so tests
+// can run in parallel on one database. It is lower case.
+func (e *authEnv) addr(name string) string {
+	return name + "-" + e.tag + "@example.com"
+}
+
+// setupAuthTest builds a handler backed by the real Postgres auth stores, a fake
+// mailer and a controllable clock. Rate limits should be small enough that the tests
 // below reach them within rateLimitProbes requests.
 func setupAuthTest(t *testing.T) *authEnv {
 	t.Helper()
@@ -80,8 +94,13 @@ func setupAuthTest(t *testing.T) *authEnv {
 
 	var (
 		clock   = newTestClock()
-		db      = newFakeDB()
+		pool    = testPool(t)
+		q       = sqlcgen.New(pool)
+		users   = postgres.NewUserStore(q)
+		tokens  = postgres.NewUserTokenStore(q)
+		mailbox = newMailbox(pool, tokens)
 		revoker = newFakeRevoker()
+		tag     = strings.ReplaceAll(uuid.NewV7().String(), "-", "")[12:]
 	)
 
 	pub, priv := newTestKeys(t)
@@ -94,23 +113,23 @@ func setupAuthTest(t *testing.T) *authEnv {
 	service, err := auth.NewService(auth.ServiceDeps{
 		RefreshTTL:         30 * 24 * time.Hour,
 		RefreshGracePeriod: refreshGrace,
-		Tx:                 db,
-		Sessions:           fakeSessions{db},
-		UserTokens:         fakeUserTokens{db},
-		Users:              fakeUsers{db},
-		Outbox:             fakeOutbox{db},
-		Issuer:             jwtService,
+		Tx:                 postgres.NewTransactor(pool, postgres.NewAuthStores),
+		Sessions:           postgres.NewSessionStore(q),
+		UserTokens:         tokens,
+		Users:              users,
+		Outbox:             postgres.NewOutboxStore(q),
+		AccessTokenIssuer:  jwtService,
 		Hasher:             fakeHasher{},
 		Revoker:            revoker,
 		LoginLimiter:       newFakeLoginLimiter(clock.Now, 5, time.Minute),
-		MailRequestLimiter: newFakeMailLimiter(clock.Now, 5),
+		AuthMailLimiter:    newFakeMailLimiter(clock.Now, 5),
 	})
 	if err != nil {
 		t.Fatalf("new auth service: %v", err)
 	}
 
 	h := NewHandler(HandlerDeps{
-		Tasks:    memory.NewTaskStore(),
+		Tasks:    newTestService(t, nil),
 		Auth:     service,
 		Verifier: jwtService,
 		Revoker:  revoker,
@@ -122,9 +141,10 @@ func setupAuthTest(t *testing.T) *authEnv {
 		Now:     clock.Now,
 	})
 
-	return &authEnv{
+	env := &authEnv{
 		h:             h,
 		AllowedOrigin: allowedOrigin,
+		tag:           tag,
 		AddUser: func(tb testing.TB, mail, password string, st userState) auth.User {
 			tb.Helper()
 			hash, err := fakeHasher{}.Hash(tb.Context(), password)
@@ -143,25 +163,18 @@ func setupAuthTest(t *testing.T) *authEnv {
 				now := clock.Now()
 				u.DisabledAt = &now
 			}
-			if err := (fakeUsers{db}).Create(tb.Context(), u); err != nil {
+			if err := users.Create(tb.Context(), u); err != nil {
 				tb.Fatalf("create user: %v", err)
 			}
 			return u
 		},
 		Mails: func(tb testing.TB, mail string) []sentMail {
 			tb.Helper()
-			db.deliver(tb, clock.Now())
-			db.mu.Lock()
-			defer db.mu.Unlock()
-			return slices.Clone(db.mails[strings.ToLower(mail)])
+			return mailbox.to(tb, mail, clock.Now())
 		},
 		Disable: func(tb testing.TB, userID uuid.UUID) {
 			tb.Helper()
-			err := (fakeUsers{db}).update(userID, func(u *auth.User) {
-				now := clock.Now()
-				u.DisabledAt = &now
-			})
-			if err != nil {
+			if _, err := pool.Exec(tb.Context(), `UPDATE users SET disabled_at = $2 WHERE id = $1`, userID, clock.Now()); err != nil {
 				tb.Fatalf("disable user: %v", err)
 			}
 		},
@@ -190,6 +203,9 @@ func setupAuthTest(t *testing.T) *authEnv {
 			return token
 		},
 	}
+	env.email = env.addr("alice")
+
+	return env
 }
 
 // rateLimitProbes is the most requests a test sends while looking for a 429.
@@ -366,38 +382,42 @@ func (e *authEnv) meStatus(tb testing.TB, accessToken string) int {
 // --- POST /auth/register -----------------------------------------------------
 
 func TestRegister(t *testing.T) {
+	t.Parallel()
 	t.Run("unknown email: 202, empty body, verification mail", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		r := e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": testEmail, "password": testPassword})
+		r := e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.email, "password": testPassword})
 		wantStatus(t, r, http.StatusAccepted)
 		wantEmptyBody(t, r)
 
-		m := e.lastMail(t, testEmail, mailVerifyEmail)
+		m := e.lastMail(t, e.email, mailVerifyEmail)
 		if m.Token == "" {
 			t.Error("verification mail carries no token")
 		}
 	})
 
 	t.Run("email is normalized", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		r := e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": "  Alice@Example.COM ", "password": testPassword})
+		r := e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": "  " + strings.ToUpper(e.email) + " ", "password": testPassword})
 		wantStatus(t, r, http.StatusAccepted)
 
-		m := e.lastMail(t, testEmail, mailVerifyEmail)
+		m := e.lastMail(t, e.email, mailVerifyEmail)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/verify-email", map[string]any{"token": m.Token}), http.StatusNoContent)
-		e.loginToken(t, "ALICE@example.com", testPassword)
+		e.loginToken(t, strings.ToUpper(e.email), testPassword)
 	})
 
 	t.Run("existing email: same 202, no verification mail, 'already registered' mail", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		r := e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": testEmail, "password": "another password"})
+		r := e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.email, "password": "another password"})
 		wantStatus(t, r, http.StatusAccepted)
 		wantEmptyBody(t, r)
 
 		var kinds []string
-		for _, m := range e.Mails(t, testEmail) {
+		for _, m := range e.Mails(t, e.email) {
 			kinds = append(kinds, m.Kind)
 		}
 		if got := strings.Join(kinds, ","); got != mailAlreadyRegistered {
@@ -405,14 +425,15 @@ func TestRegister(t *testing.T) {
 		}
 
 		// The existing password must not have been replaced.
-		e.loginToken(t, testEmail, testPassword)
+		e.loginToken(t, e.email, testPassword)
 	})
 
 	t.Run("account cannot sign in before verification", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": testEmail, "password": testPassword}), http.StatusAccepted)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.email, "password": testPassword}), http.StatusAccepted)
 
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword})
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword})
 		wantStatus(t, r, http.StatusForbidden)
 	})
 
@@ -424,15 +445,16 @@ func TestRegister(t *testing.T) {
 		{"invalid email", map[string]any{"email": "not-an-email", "password": testPassword}, []string{"email"}},
 		{"email too long", map[string]any{"email": strings.Repeat("a", 250) + "@example.com", "password": testPassword}, []string{"email"}},
 		{"missing email", map[string]any{"password": testPassword}, []string{"email"}},
-		{"missing password", map[string]any{"email": testEmail}, []string{"password"}},
-		{"password too short", map[string]any{"email": testEmail, "password": "1234567"}, []string{"password"}},
-		{"password too long", map[string]any{"email": testEmail, "password": strings.Repeat("a", 129)}, []string{"password"}},
+		{"missing password", map[string]any{"email": rejectedEmail}, []string{"password"}},
+		{"password too short", map[string]any{"email": rejectedEmail, "password": "1234567"}, []string{"password"}},
+		{"password too long", map[string]any{"email": rejectedEmail, "password": strings.Repeat("a", 129)}, []string{"password"}},
 		{"malformed JSON", `{"email":`, []string{"malformed json"}},
 		{"empty body", nil, []string{"body is required"}},
 		{"wrong type", map[string]any{"email": 1, "password": testPassword}, []string{"email"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := setupAuthTest(t)
 			r := e.do(t, http.MethodPost, "/auth/register", tt.body)
 			wantStatus(t, r, http.StatusBadRequest)
@@ -441,18 +463,20 @@ func TestRegister(t *testing.T) {
 	}
 
 	t.Run("password of exactly 8 and 128 characters is accepted", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": "a@example.com", "password": strings.Repeat("a", 8)}), http.StatusAccepted)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": "b@example.com", "password": strings.Repeat("a", 128)}), http.StatusAccepted)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.addr("a"), "password": strings.Repeat("a", 8)}), http.StatusAccepted)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.addr("b"), "password": strings.Repeat("a", 128)}), http.StatusAccepted)
 	})
 
 	t.Run("rate limited per email", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		var got apiResp
 		for i := range rateLimitProbes {
 			// A different IP each time, so only the per-email limit can trigger.
 			got = e.do(t, http.MethodPost, "/auth/register",
-				map[string]any{"email": testEmail, "password": testPassword},
+				map[string]any{"email": e.email, "password": testPassword},
 				withRemoteAddr("10.0.0."+strconv.Itoa(i%250+1)+":1234"))
 			if got.Status == http.StatusTooManyRequests {
 				break
@@ -463,6 +487,7 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("rate limited per IP", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		var got apiResp
 		for i := range rateLimitProbes {
@@ -481,13 +506,15 @@ func TestRegister(t *testing.T) {
 // --- POST /auth/verify-email -------------------------------------------------
 
 func TestVerifyEmail(t *testing.T) {
+	t.Parallel()
 	register := func(t *testing.T, e *authEnv) string {
 		t.Helper()
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": testEmail, "password": testPassword}), http.StatusAccepted)
-		return e.lastMail(t, testEmail, mailVerifyEmail).Token
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.email, "password": testPassword}), http.StatusAccepted)
+		return e.lastMail(t, e.email, mailVerifyEmail).Token
 	}
 
 	t.Run("success: 204 and the account can sign in", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		token := register(t, e)
 
@@ -495,10 +522,11 @@ func TestVerifyEmail(t *testing.T) {
 		wantStatus(t, r, http.StatusNoContent)
 		wantEmptyBody(t, r)
 
-		e.loginToken(t, testEmail, testPassword)
+		e.loginToken(t, e.email, testPassword)
 	})
 
 	t.Run("a token is single use", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		token := register(t, e)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/verify-email", map[string]any{"token": token}), http.StatusNoContent)
@@ -508,13 +536,14 @@ func TestVerifyEmail(t *testing.T) {
 	})
 
 	t.Run("unknown, expired and used tokens get the same 400", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		used := register(t, e)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/verify-email", map[string]any{"token": used}), http.StatusNoContent)
 
 		// A second, never-verified account provides the token that expires.
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": "bob@example.com", "password": testPassword}), http.StatusAccepted)
-		stale := e.lastMail(t, "bob@example.com", mailVerifyEmail).Token
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.addr("bob"), "password": testPassword}), http.StatusAccepted)
+		stale := e.lastMail(t, e.addr("bob"), mailVerifyEmail).Token
 		e.Advance(30 * 24 * time.Hour)
 
 		var msgs []string
@@ -529,10 +558,11 @@ func TestVerifyEmail(t *testing.T) {
 	})
 
 	t.Run("a password-reset token cannot verify an email", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": testEmail}), http.StatusAccepted)
-		reset := e.lastMail(t, testEmail, mailResetPassword).Token
+		e.verifiedUser(t, e.email)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": e.email}), http.StatusAccepted)
+		reset := e.lastMail(t, e.email, mailResetPassword).Token
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/verify-email", map[string]any{"token": reset}), http.StatusBadRequest)
 	})
@@ -550,6 +580,7 @@ func TestVerifyEmail(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := setupAuthTest(t)
 			r := e.do(t, http.MethodPost, "/auth/verify-email", tt.body)
 			wantStatus(t, r, http.StatusBadRequest)
@@ -557,6 +588,7 @@ func TestVerifyEmail(t *testing.T) {
 	}
 
 	t.Run("GET is not allowed", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		wantStatus(t, e.do(t, http.MethodGet, "/auth/verify-email?token=x", nil), http.StatusMethodNotAllowed)
 	})
@@ -565,23 +597,26 @@ func TestVerifyEmail(t *testing.T) {
 // --- POST /auth/resend-verification ------------------------------------------
 
 func TestResendVerification(t *testing.T) {
+	t.Parallel()
 	t.Run("unverified account: 202 and a mail whose token works", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, testEmail, testPassword, userState{})
+		e.AddUser(t, e.email, testPassword, userState{})
 
-		r := e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": testEmail})
+		r := e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": e.email})
 		wantStatus(t, r, http.StatusAccepted)
 		wantEmptyBody(t, r)
 
-		token := e.lastMail(t, testEmail, mailVerifyEmail).Token
+		token := e.lastMail(t, e.email, mailVerifyEmail).Token
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/verify-email", map[string]any{"token": token}), http.StatusNoContent)
 	})
 
 	t.Run("unknown and verified accounts: the same 202 and no verification mail", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		for _, email := range []string{testEmail, "nobody@example.com"} {
+		for _, email := range []string{e.email, e.addr("nobody")} {
 			r := e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": email})
 			wantStatus(t, r, http.StatusAccepted)
 			wantEmptyBody(t, r)
@@ -594,10 +629,11 @@ func TestResendVerification(t *testing.T) {
 	})
 
 	t.Run("email is case-insensitive", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, testEmail, testPassword, userState{})
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": "ALICE@EXAMPLE.COM"}), http.StatusAccepted)
-		e.lastMail(t, testEmail, mailVerifyEmail)
+		e.AddUser(t, e.email, testPassword, userState{})
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": strings.ToUpper(e.email)}), http.StatusAccepted)
+		e.lastMail(t, e.email, mailVerifyEmail)
 	})
 
 	for _, tt := range []struct {
@@ -610,17 +646,19 @@ func TestResendVerification(t *testing.T) {
 		{"empty body", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := setupAuthTest(t)
 			wantStatus(t, e.do(t, http.MethodPost, "/auth/resend-verification", tt.body), http.StatusBadRequest)
 		})
 	}
 
 	t.Run("rate limited per email", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, testEmail, testPassword, userState{})
+		e.AddUser(t, e.email, testPassword, userState{})
 		var got apiResp
 		for i := range rateLimitProbes {
-			got = e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": testEmail},
+			got = e.do(t, http.MethodPost, "/auth/resend-verification", map[string]any{"email": e.email},
 				withRemoteAddr("10.0.0."+strconv.Itoa(i%250+1)+":1234"))
 			if got.Status == http.StatusTooManyRequests {
 				break
@@ -634,11 +672,13 @@ func TestResendVerification(t *testing.T) {
 // --- POST /auth/login --------------------------------------------------------
 
 func TestLogin(t *testing.T) {
+	t.Parallel()
 	t.Run("token mode (default): refresh token in the body, no cookie", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword})
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword})
 		wantStatus(t, r, http.StatusOK)
 
 		tr := decodeTokens(t, r)
@@ -663,9 +703,10 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("explicit token_mode token behaves like the default", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword, "token_mode": "token"})
+		e.verifiedUser(t, e.email)
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword, "token_mode": "token"})
 		wantStatus(t, r, http.StatusOK)
 		if decodeTokens(t, r).RefreshToken == nil {
 			t.Error("refresh_token missing")
@@ -673,10 +714,11 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("cookie mode: HttpOnly Secure cookie under /auth, not in the body", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword, "token_mode": "cookie"})
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword, "token_mode": "cookie"})
 		wantStatus(t, r, http.StatusOK)
 
 		tr := decodeTokens(t, r)
@@ -696,17 +738,19 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("email is case-insensitive", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		e.loginToken(t, "Alice@EXAMPLE.com", testPassword)
+		e.verifiedUser(t, e.email)
+		e.loginToken(t, strings.ToUpper(e.email), testPassword)
 	})
 
 	t.Run("401: unknown email and wrong password give the same message", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		unknown := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": "nobody@example.com", "password": testPassword})
-		wrong := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": "wrong password"})
+		unknown := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.addr("nobody"), "password": testPassword})
+		wrong := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": "wrong password"})
 		wantStatus(t, unknown, http.StatusUnauthorized)
 		wantStatus(t, wrong, http.StatusUnauthorized)
 
@@ -717,26 +761,29 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("403: right password but email not verified", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, testEmail, testPassword, userState{})
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword})
+		e.AddUser(t, e.email, testPassword, userState{})
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword})
 		wantStatus(t, r, http.StatusForbidden)
 		checkErrorMesssage(t, r.errorMessage(t), []string{"email not verified"})
 	})
 
 	t.Run("403: right password but account disabled", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, testEmail, testPassword, userState{Verified: true, Disabled: true})
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword})
+		e.AddUser(t, e.email, testPassword, userState{Verified: true, Disabled: true})
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword})
 		wantStatus(t, r, http.StatusForbidden)
 		checkErrorMesssage(t, r.errorMessage(t), []string{"account disabled"})
 	})
 
 	t.Run("wrong password never reveals unverified or disabled state", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, "unverified@example.com", testPassword, userState{})
-		e.AddUser(t, "disabled@example.com", testPassword, userState{Verified: true, Disabled: true})
-		for _, email := range []string{"unverified@example.com", "disabled@example.com"} {
+		e.AddUser(t, e.addr("unverified"), testPassword, userState{})
+		e.AddUser(t, e.addr("disabled"), testPassword, userState{Verified: true, Disabled: true})
+		for _, email := range []string{e.addr("unverified"), e.addr("disabled")} {
 			r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": email, "password": "wrong password"})
 			wantStatus(t, r, http.StatusUnauthorized)
 		}
@@ -747,20 +794,21 @@ func TestLogin(t *testing.T) {
 		body any
 	}{
 		{"missing email", map[string]any{"password": testPassword}},
-		{"missing password", map[string]any{"email": testEmail}},
+		{"missing password", map[string]any{"email": rejectedEmail}},
 		{"invalid email", map[string]any{"email": "nope", "password": testPassword}},
-		{"empty password", map[string]any{"email": testEmail, "password": ""}},
-		{"password too long", map[string]any{"email": testEmail, "password": strings.Repeat("a", 129)}},
+		{"empty password", map[string]any{"email": rejectedEmail, "password": ""}},
+		{"password too long", map[string]any{"email": rejectedEmail, "password": strings.Repeat("a", 129)}},
 		// "ﬁ" (U+FB01) is one rune but becomes "fi" under NFKC: 65 runes -> 130.
-		{"password too long after NFKC", map[string]any{"email": testEmail, "password": strings.Repeat("\ufb01", 65)}},
-		{"invalid token_mode", map[string]any{"email": testEmail, "password": testPassword, "token_mode": "session"}},
+		{"password too long after NFKC", map[string]any{"email": rejectedEmail, "password": strings.Repeat("\ufb01", 65)}},
+		{"invalid token_mode", map[string]any{"email": rejectedEmail, "password": testPassword, "token_mode": "session"}},
 		{"malformed JSON", `{"email":`},
 		{"empty body", nil},
 	}
 	for _, tt := range validationTests {
 		t.Run("400: "+tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := setupAuthTest(t)
-			e.verifiedUser(t, testEmail)
+			e.verifiedUser(t, e.email)
 			wantStatus(t, e.do(t, http.MethodPost, "/auth/login", tt.body), http.StatusBadRequest)
 		})
 	}
@@ -769,64 +817,72 @@ func TestLogin(t *testing.T) {
 	// password shorter than the 8-character minimum of register, is a wrong
 	// password and gets the same 401 as any other.
 	t.Run("401: a password shorter than the registration minimum", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		for _, pw := range []string{"a", "1234567"} {
-			r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": pw})
+			r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": pw})
 			wantStatus(t, r, http.StatusUnauthorized)
 			checkErrorMesssage(t, r.errorMessage(t), []string{"invalid email or password"})
 		}
 	})
 
 	t.Run("401: a short password for an unknown email looks the same", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": "nobody@example.com", "password": "short"})
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.addr("nobody"), "password": "short"})
 		wantStatus(t, r, http.StatusUnauthorized)
 		checkErrorMesssage(t, r.errorMessage(t), []string{"invalid email or password"})
 	})
 
 	t.Run("401: a password of exactly 128 characters is not rejected as too long", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": strings.Repeat("a", 128)}), http.StatusUnauthorized)
+		e.verifiedUser(t, e.email)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": strings.Repeat("a", 128)}), http.StatusUnauthorized)
 	})
 
 	t.Run("length is counted after NFKC: 140 runes that normalize to 70 are a 401, not a 400", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		decomposed := strings.Repeat("e\u0301", 70) // 'e' + combining acute, composes to one rune
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": decomposed}), http.StatusUnauthorized)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": decomposed}), http.StatusUnauthorized)
 	})
 
 	t.Run("a rejected password does not count as a failed attempt", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		for range 10 { // more than the fake limiter's free attempts
-			wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": ""}), http.StatusBadRequest)
+			wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": ""}), http.StatusBadRequest)
 		}
-		e.loginToken(t, testEmail, testPassword)
+		e.loginToken(t, e.email, testPassword)
 	})
 
 	t.Run("400 comes before 429", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		exhaustLoginLimit(t, e, testEmail)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail}), http.StatusBadRequest)
+		exhaustLoginLimit(t, e, e.email)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email}), http.StatusBadRequest)
 	})
 
 	t.Run("429 per email: even the right password is refused while waiting", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		last := exhaustLoginLimit(t, e, testEmail)
+		last := exhaustLoginLimit(t, e, e.email)
 		wantRetryAfter(t, last)
 
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword},
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword},
 			withRemoteAddr("198.51.100.77:1234"))
 		wantStatus(t, r, http.StatusTooManyRequests)
 		wantRetryAfter(t, r)
 	})
 
 	t.Run("429 per IP", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		var got apiResp
 		for i := range rateLimitProbes {
@@ -842,11 +898,12 @@ func TestLogin(t *testing.T) {
 	})
 
 	t.Run("429 is checked before the password: no 401/403 leak while limited", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.AddUser(t, testEmail, testPassword, userState{}) // unverified
+		e.AddUser(t, e.email, testPassword, userState{}) // unverified
 
-		exhaustLoginLimit(t, e, testEmail)
-		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword},
+		exhaustLoginLimit(t, e, e.email)
+		r := e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword},
 			withRemoteAddr("198.51.100.78:1234"))
 		wantStatus(t, r, http.StatusTooManyRequests)
 	})
@@ -874,10 +931,12 @@ func exhaustLoginLimit(tb testing.TB, e *authEnv, email string) apiResp {
 const refreshGrace = 15 * time.Second
 
 func TestRefresh(t *testing.T) {
+	t.Parallel()
 	t.Run("body token: new access and refresh token in the body, no cookie", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 
 		r := e.refreshWithBody(t, *first.RefreshToken)
 		wantStatus(t, r, http.StatusOK)
@@ -898,9 +957,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("cookie token: replaced by a new cookie, not in the body", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, old := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, old := e.loginCookie(t, e.email, testPassword)
 
 		r := e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(old))
 		wantStatus(t, r, http.StatusOK)
@@ -922,17 +982,19 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("cookie with an empty JSON object body", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, old := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, old := e.loginCookie(t, e.email, testPassword)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", map[string]any{}, withRefreshCookie(old)), http.StatusOK)
 	})
 
 	t.Run("the body token wins over the cookie only when the body has one", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		bodyLogin := e.loginToken(t, testEmail, testPassword)
-		_, cookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		bodyLogin := e.loginToken(t, e.email, testPassword)
+		_, cookie := e.loginCookie(t, e.email, testPassword)
 
 		r := e.do(t, http.MethodPost, "/auth/refresh", map[string]any{"refresh_token": *bodyLogin.RefreshToken}, withRefreshCookie(cookie))
 		wantStatus(t, r, http.StatusOK)
@@ -942,9 +1004,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("old token inside the grace period: new access token only", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 		wantStatus(t, e.refreshWithBody(t, *first.RefreshToken), http.StatusOK)
 
 		e.Advance(refreshGrace - time.Second)
@@ -964,9 +1027,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("old cookie token inside the grace period: no new cookie", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, old := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, old := e.loginCookie(t, e.email, testPassword)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(old)), http.StatusOK)
 
 		r := e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(old))
@@ -980,9 +1044,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("old token after the grace period: 401 and the whole session is revoked", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 
 		r := e.refreshWithBody(t, *first.RefreshToken)
 		wantStatus(t, r, http.StatusOK)
@@ -1001,9 +1066,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("the refresh token keeps the expiry of the session", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, old := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, old := e.loginCookie(t, e.email, testPassword)
 
 		first := e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(old))
 		wantStatus(t, first, http.StatusOK)
@@ -1020,9 +1086,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("a rotated token can be used again", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		cur := *e.loginToken(t, testEmail, testPassword).RefreshToken
+		e.verifiedUser(t, e.email)
+		cur := *e.loginToken(t, e.email, testPassword).RefreshToken
 
 		for range 3 {
 			e.Advance(refreshGrace + time.Second)
@@ -1033,9 +1100,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("a disabled account cannot refresh inside the grace period either", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		u := e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		u := e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 		wantStatus(t, e.refreshWithBody(t, *first.RefreshToken), http.StatusOK)
 
 		e.Disable(t, u.ID)
@@ -1045,9 +1113,10 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("the session survives a grace-period request", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 		second := decodeTokens(t, e.refreshWithBody(t, *first.RefreshToken))
 		wantStatus(t, e.refreshWithBody(t, *first.RefreshToken), http.StatusOK)
 
@@ -1055,6 +1124,7 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("401 and cleared cookie for an unknown cookie token", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		r := e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie("unknown"))
 		wantStatus(t, r, http.StatusUnauthorized)
@@ -1063,6 +1133,7 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("401 for an unknown body token", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		r := e.refreshWithBody(t, "unknown")
 		wantStatus(t, r, http.StatusUnauthorized)
@@ -1070,29 +1141,33 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("401 when no token is sent at all", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", nil), http.StatusUnauthorized)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", map[string]any{}), http.StatusUnauthorized)
 	})
 
 	t.Run("401 for an expired session", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 		e.Advance(31 * 24 * time.Hour)
 		wantStatus(t, e.refreshWithBody(t, *first.RefreshToken), http.StatusUnauthorized)
 	})
 
 	t.Run("an access token is not a refresh token", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 		wantStatus(t, e.refreshWithBody(t, first.AccessToken), http.StatusUnauthorized)
 	})
 
 	// The length of the token is not validated by the API: a token that is too
 	// long can never be a real one, so it is just an unknown token.
 	t.Run("401 for a body token longer than 128 characters", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		r := e.refreshWithBody(t, strings.Repeat("a", 129))
 		wantStatus(t, r, http.StatusUnauthorized)
@@ -1100,14 +1175,16 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("400 for malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", `{"refresh_token":`), http.StatusBadRequest)
 	})
 
 	t.Run("cookie mode: a foreign Origin is 403", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, cookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, cookie := e.loginCookie(t, e.email, testPassword)
 
 		r := e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(cookie), withOrigin("https://evil.example"))
 		wantStatus(t, r, http.StatusForbidden)
@@ -1118,28 +1195,31 @@ func TestRefresh(t *testing.T) {
 	})
 
 	t.Run("cookie mode: an allowed Origin or none is accepted", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, c1 := e.loginCookie(t, testEmail, testPassword)
-		_, c2 := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, c1 := e.loginCookie(t, e.email, testPassword)
+		_, c2 := e.loginCookie(t, e.email, testPassword)
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(c1), withOrigin(e.AllowedOrigin)), http.StatusOK)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/refresh", nil, withRefreshCookie(c2)), http.StatusOK)
 	})
 
 	t.Run("body mode ignores the Origin header", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		first := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		first := e.loginToken(t, e.email, testPassword)
 		r := e.do(t, http.MethodPost, "/auth/refresh", map[string]any{"refresh_token": *first.RefreshToken}, withOrigin("https://evil.example"))
 		wantStatus(t, r, http.StatusOK)
 	})
 
 	t.Run("a disabled account cannot refresh", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		u := e.verifiedUser(t, "carol@example.com")
-		carol := e.loginToken(t, "carol@example.com", testPassword)
+		e.verifiedUser(t, e.email)
+		u := e.verifiedUser(t, e.addr("carol"))
+		carol := e.loginToken(t, e.addr("carol"), testPassword)
 		e.Disable(t, u.ID)
 
 		r := e.refreshWithBody(t, *carol.RefreshToken)
@@ -1147,7 +1227,7 @@ func TestRefresh(t *testing.T) {
 		checkErrorMesssage(t, r.errorMessage(t), []string{"account disabled"})
 
 		// Other users are not affected.
-		alice := e.loginToken(t, testEmail, testPassword)
+		alice := e.loginToken(t, e.email, testPassword)
 		wantStatus(t, e.refreshWithBody(t, *alice.RefreshToken), http.StatusOK)
 	})
 }
@@ -1155,10 +1235,12 @@ func TestRefresh(t *testing.T) {
 // --- POST /auth/logout -------------------------------------------------------
 
 func TestLogout(t *testing.T) {
+	t.Parallel()
 	t.Run("body token: 204, session and access token revoked", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		tr := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		tr := e.loginToken(t, e.email, testPassword)
 
 		r := e.do(t, http.MethodPost, "/auth/logout", map[string]any{"refresh_token": *tr.RefreshToken})
 		wantStatus(t, r, http.StatusNoContent)
@@ -1171,9 +1253,10 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("cookie token: 204 and the cookie is cleared", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		tr, cookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		tr, cookie := e.loginCookie(t, e.email, testPassword)
 
 		r := e.do(t, http.MethodPost, "/auth/logout", nil, withRefreshCookie(cookie))
 		wantStatus(t, r, http.StatusNoContent)
@@ -1186,18 +1269,20 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("works after the access token has expired and needs no Authorization", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		tr := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		tr := e.loginToken(t, e.email, testPassword)
 		e.Advance(24 * time.Hour)
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout", map[string]any{"refresh_token": *tr.RefreshToken}), http.StatusNoContent)
 	})
 
 	t.Run("unknown token, repeated logout and no token are all 204", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		tr := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		tr := e.loginToken(t, e.email, testPassword)
 		body := map[string]any{"refresh_token": *tr.RefreshToken}
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout", body), http.StatusNoContent)
@@ -1208,10 +1293,11 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("only this session is revoked", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		a := e.loginToken(t, testEmail, testPassword)
-		b := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		a := e.loginToken(t, e.email, testPassword)
+		b := e.loginToken(t, e.email, testPassword)
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout", map[string]any{"refresh_token": *a.RefreshToken}), http.StatusNoContent)
 
@@ -1224,6 +1310,7 @@ func TestLogout(t *testing.T) {
 	// Logout never reports a bad token: the client wants to be signed out, and
 	// the cookie is cleared whatever the token was.
 	t.Run("an invalid cookie token is 204 and the cookie is still cleared", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		for name, token := range map[string]string{
 			"unknown":      "unknown",
@@ -1240,9 +1327,10 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("an already revoked cookie token is 204 and the cookie is cleared", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, cookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, cookie := e.loginCookie(t, e.email, testPassword)
 
 		for range 2 {
 			r := e.do(t, http.MethodPost, "/auth/logout", nil, withRefreshCookie(cookie))
@@ -1252,6 +1340,7 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("no token at all: 204 and the cookie is cleared", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		r := e.do(t, http.MethodPost, "/auth/logout", nil)
 		wantStatus(t, r, http.StatusNoContent)
@@ -1259,6 +1348,7 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("a body token longer than 128 characters is 204", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		r := e.do(t, http.MethodPost, "/auth/logout", map[string]any{"refresh_token": strings.Repeat("a", 129)})
 		wantStatus(t, r, http.StatusNoContent)
@@ -1266,14 +1356,16 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("400 for malformed JSON", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout", `{"refresh_token":`), http.StatusBadRequest)
 	})
 
 	t.Run("cookie mode: a foreign Origin is 403 and nothing is revoked", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, cookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, cookie := e.loginCookie(t, e.email, testPassword)
 
 		r := e.do(t, http.MethodPost, "/auth/logout", nil, withRefreshCookie(cookie), withOrigin("https://evil.example"))
 		wantStatus(t, r, http.StatusForbidden)
@@ -1283,9 +1375,10 @@ func TestLogout(t *testing.T) {
 	})
 
 	t.Run("cookie mode: an allowed Origin is accepted", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		_, cookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		_, cookie := e.loginCookie(t, e.email, testPassword)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout", nil, withRefreshCookie(cookie), withOrigin(e.AllowedOrigin)), http.StatusNoContent)
 	})
 }
@@ -1293,11 +1386,13 @@ func TestLogout(t *testing.T) {
 // --- POST /auth/logout-all ---------------------------------------------------
 
 func TestLogoutAll(t *testing.T) {
+	t.Parallel()
 	t.Run("revokes every session and access token of the user, clears the cookie", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		a := e.loginToken(t, testEmail, testPassword)
-		b, bCookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		a := e.loginToken(t, e.email, testPassword)
+		b, bCookie := e.loginCookie(t, e.email, testPassword)
 
 		// Revocation has one-second granularity: tokens issued in the same second
 		// as the logout are not revoked.
@@ -1317,11 +1412,12 @@ func TestLogoutAll(t *testing.T) {
 	})
 
 	t.Run("does not touch other users", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		e.verifiedUser(t, "bob@example.com")
-		alice := e.loginToken(t, testEmail, testPassword)
-		bob := e.loginToken(t, "bob@example.com", testPassword)
+		e.verifiedUser(t, e.email)
+		e.verifiedUser(t, e.addr("bob"))
+		alice := e.loginToken(t, e.email, testPassword)
+		bob := e.loginToken(t, e.addr("bob"), testPassword)
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout-all", nil, withBearer(alice.AccessToken)), http.StatusNoContent)
 
@@ -1332,20 +1428,22 @@ func TestLogoutAll(t *testing.T) {
 	})
 
 	t.Run("the user can sign in again afterwards", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		tr := e.loginToken(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		tr := e.loginToken(t, e.email, testPassword)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/logout-all", nil, withBearer(tr.AccessToken)), http.StatusNoContent)
 
-		again := e.loginToken(t, testEmail, testPassword)
+		again := e.loginToken(t, e.email, testPassword)
 		if got := e.meStatus(t, again.AccessToken); got != http.StatusOK {
 			t.Errorf("GET /me with a new token = %d, want 200", got)
 		}
 	})
 
 	t.Run("401 without a valid access token", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		u := e.verifiedUser(t, testEmail)
+		u := e.verifiedUser(t, e.email)
 
 		for name, opts := range map[string][]reqOpt{
 			"no header":   nil,
@@ -1370,33 +1468,37 @@ func TestLogoutAll(t *testing.T) {
 // --- POST /auth/forgot-password ----------------------------------------------
 
 func TestForgotPassword(t *testing.T) {
+	t.Parallel()
 	t.Run("known email: 202, empty body, reset mail", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
-		r := e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": testEmail})
+		r := e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": e.email})
 		wantStatus(t, r, http.StatusAccepted)
 		wantEmptyBody(t, r)
-		if e.lastMail(t, testEmail, mailResetPassword).Token == "" {
+		if e.lastMail(t, e.email, mailResetPassword).Token == "" {
 			t.Error("reset mail carries no token")
 		}
 	})
 
 	t.Run("unknown email: the same 202 and no mail", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		r := e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": "nobody@example.com"})
+		r := e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": e.addr("nobody")})
 		wantStatus(t, r, http.StatusAccepted)
 		wantEmptyBody(t, r)
-		if mails := e.Mails(t, "nobody@example.com"); len(mails) != 0 {
+		if mails := e.Mails(t, e.addr("nobody")); len(mails) != 0 {
 			t.Errorf("mails to an unknown address = %+v, want none", mails)
 		}
 	})
 
 	t.Run("email is case-insensitive", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": "ALICE@example.com"}), http.StatusAccepted)
-		e.lastMail(t, testEmail, mailResetPassword)
+		e.verifiedUser(t, e.email)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": strings.ToUpper(e.email)}), http.StatusAccepted)
+		e.lastMail(t, e.email, mailResetPassword)
 	})
 
 	for _, tt := range []struct {
@@ -1409,17 +1511,19 @@ func TestForgotPassword(t *testing.T) {
 		{"empty body", nil},
 	} {
 		t.Run("400: "+tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := setupAuthTest(t)
 			wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", tt.body), http.StatusBadRequest)
 		})
 	}
 
 	t.Run("rate limited per email", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		var got apiResp
 		for i := range rateLimitProbes {
-			got = e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": testEmail},
+			got = e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": e.email},
 				withRemoteAddr("10.2.0."+strconv.Itoa(i%250+1)+":1234"))
 			if got.Status == http.StatusTooManyRequests {
 				break
@@ -1430,6 +1534,7 @@ func TestForgotPassword(t *testing.T) {
 	})
 
 	t.Run("rate limited per IP", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
 		var got apiResp
 		for i := range rateLimitProbes {
@@ -1448,30 +1553,33 @@ func TestForgotPassword(t *testing.T) {
 // --- POST /auth/reset-password -----------------------------------------------
 
 func TestResetPassword(t *testing.T) {
+	t.Parallel()
 	resetToken := func(t *testing.T, e *authEnv) string {
 		t.Helper()
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": testEmail}), http.StatusAccepted)
-		return e.lastMail(t, testEmail, mailResetPassword).Token
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/forgot-password", map[string]any{"email": e.email}), http.StatusAccepted)
+		return e.lastMail(t, e.email, mailResetPassword).Token
 	}
 
 	t.Run("success: 204, new password works, old one does not", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		token := resetToken(t, e)
 
 		r := e.do(t, http.MethodPost, "/auth/reset-password", map[string]any{"token": token, "new_password": testNewPassword})
 		wantStatus(t, r, http.StatusNoContent)
 		wantEmptyBody(t, r)
 
-		e.loginToken(t, testEmail, testNewPassword)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": testEmail, "password": testPassword}), http.StatusUnauthorized)
+		e.loginToken(t, e.email, testNewPassword)
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/login", map[string]any{"email": e.email, "password": testPassword}), http.StatusUnauthorized)
 	})
 
 	t.Run("every session of the user is revoked", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
-		a := e.loginToken(t, testEmail, testPassword)
-		b, bCookie := e.loginCookie(t, testEmail, testPassword)
+		e.verifiedUser(t, e.email)
+		a := e.loginToken(t, e.email, testPassword)
+		b, bCookie := e.loginCookie(t, e.email, testPassword)
 		token := resetToken(t, e)
 
 		// Revocation has one-second granularity: tokens issued in the same second
@@ -1489,19 +1597,21 @@ func TestResetPassword(t *testing.T) {
 	})
 
 	t.Run("a token is single use", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		token := resetToken(t, e)
 		body := map[string]any{"token": token, "new_password": testNewPassword}
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/reset-password", body), http.StatusNoContent)
 
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/reset-password", map[string]any{"token": token, "new_password": "yet another password"}), http.StatusBadRequest)
-		e.loginToken(t, testEmail, testNewPassword)
+		e.loginToken(t, e.email, testNewPassword)
 	})
 
 	t.Run("unknown, expired and used tokens get the same 400", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 
 		used := resetToken(t, e)
 		wantStatus(t, e.do(t, http.MethodPost, "/auth/reset-password", map[string]any{"token": used, "new_password": testNewPassword}), http.StatusNoContent)
@@ -1520,17 +1630,19 @@ func TestResetPassword(t *testing.T) {
 	})
 
 	t.Run("an email-verification token cannot reset a password", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": testEmail, "password": testPassword}), http.StatusAccepted)
-		verify := e.lastMail(t, testEmail, mailVerifyEmail).Token
+		wantStatus(t, e.do(t, http.MethodPost, "/auth/register", map[string]any{"email": e.email, "password": testPassword}), http.StatusAccepted)
+		verify := e.lastMail(t, e.email, mailVerifyEmail).Token
 
 		r := e.do(t, http.MethodPost, "/auth/reset-password", map[string]any{"token": verify, "new_password": testNewPassword})
 		wantStatus(t, r, http.StatusBadRequest)
 	})
 
 	t.Run("an invalid new password does not use up the token", func(t *testing.T) {
+		t.Parallel()
 		e := setupAuthTest(t)
-		e.verifiedUser(t, testEmail)
+		e.verifiedUser(t, e.email)
 		token := resetToken(t, e)
 
 		r := e.do(t, http.MethodPost, "/auth/reset-password", map[string]any{"token": token, "new_password": "short"})
@@ -1554,6 +1666,7 @@ func TestResetPassword(t *testing.T) {
 		{"empty body", nil},
 	} {
 		t.Run("400: "+tt.name, func(t *testing.T) {
+			t.Parallel()
 			e := setupAuthTest(t)
 			wantStatus(t, e.do(t, http.MethodPost, "/auth/reset-password", tt.body), http.StatusBadRequest)
 		})

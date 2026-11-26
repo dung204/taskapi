@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dung204/taskapi/internal/apperr"
+	"github.com/dung204/taskapi/internal/email"
 )
 
 // Credentials and passwords.
@@ -13,7 +14,7 @@ var (
 	ErrInvalidCredentials   = errors.New("invalid email or password")
 	ErrInvalidHash          = errors.New("invalid hash")
 	ErrUnauthorized         = errors.New("unauthorized")
-	ErrInvalidEmail         = fmt.Errorf("%w: invalid email", apperr.ErrInvalidInput)
+	ErrInvalidEmail         = email.ErrInvalidEmail
 	ErrInvalidPassword      = fmt.Errorf("%w: invalid password", apperr.ErrInvalidInput)
 	ErrWrongCurrentPassword = errors.New("wrong current password")
 )

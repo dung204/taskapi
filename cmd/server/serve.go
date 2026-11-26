@@ -35,7 +35,6 @@ func serve(ctx context.Context, cfg config, logger *slog.Logger, reg *prometheus
 	logger.Info("server started",
 		"port", cfg.port,
 		"addr", ln.Addr().String(),
-		"store", cfg.tasks.store,
 		"log_format", cfg.logging.format,
 		"log_level", cfg.logging.level,
 		"overdue_scan_worker_enabled", cfg.tasks.overdueScanEnabled,

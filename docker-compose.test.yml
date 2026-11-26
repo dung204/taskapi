@@ -1,0 +1,22 @@
+# Throwaway Postgres for `make test` (scripts/test.sh). It is a separate compose
+# project (-p taskapi-test), so it never touches the dev stack in
+# docker-compose.yml. Data lives on tmpfs and is lost when the container stops.
+name: taskapi-test
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: taskapi_test_template
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "max_connections=300"]
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d taskapi_test_template"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

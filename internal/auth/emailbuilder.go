@@ -1,22 +1,16 @@
 package auth
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"errors"
 	"fmt"
-	htmltmpl "html/template"
-	"io/fs"
 	"strings"
-	texttmpl "text/template"
 	"time"
 
 	"github.com/hako/durafmt"
 
 	"github.com/dung204/taskapi/internal/auth/templates"
 	"github.com/dung204/taskapi/internal/email"
+	"github.com/dung204/taskapi/internal/opaquetoken"
 )
 
 type EmailBuilder struct {
@@ -25,8 +19,7 @@ type EmailBuilder struct {
 	resetPasswordTTL time.Duration
 	users            UserStore
 	userTokens       UserTokenStore
-	htmlTemplates    map[string]*htmltmpl.Template
-	textTemplates    map[string]*texttmpl.Template
+	templates        email.Templates
 	now              func() time.Time
 }
 
@@ -40,43 +33,9 @@ type EmailBuilderDeps struct {
 }
 
 func NewEmailBuilder(deps EmailBuilderDeps) (*EmailBuilder, error) {
-	entries, err := fs.ReadDir(templates.FS, ".")
+	tmpls, err := email.LoadTemplates(templates.FS)
 	if err != nil {
-		return nil, fmt.Errorf("new email builder: can not read embed FS: %w", err)
-	}
-
-	htmlTmpls := make(map[string]*htmltmpl.Template)
-	textTmpls := make(map[string]*texttmpl.Template)
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-
-		switch {
-		case strings.HasSuffix(name, ".html.tmpl"):
-			key := strings.TrimSuffix(name, ".html.tmpl")
-
-			t, err := htmltmpl.ParseFS(templates.FS, name)
-			if err != nil {
-				return nil, fmt.Errorf("parse template: %w", err)
-			}
-
-			htmlTmpls[key] = t
-
-		case strings.HasSuffix(name, ".text.tmpl") || strings.HasSuffix(name, ".tmpl"):
-			key := strings.TrimSuffix(name, ".text.tmpl")
-			key = strings.TrimSuffix(key, ".tmpl")
-
-			t, err := texttmpl.ParseFS(templates.FS, name)
-			if err != nil {
-				return nil, fmt.Errorf("parse template: %w", err)
-			}
-
-			textTmpls[key] = t
-		}
+		return nil, fmt.Errorf("new email builder: %w", err)
 	}
 
 	if deps.Now == nil {
@@ -89,8 +48,7 @@ func NewEmailBuilder(deps EmailBuilderDeps) (*EmailBuilder, error) {
 		resetPasswordTTL: deps.ResetPasswordTTL,
 		users:            deps.Users,
 		userTokens:       deps.UserTokens,
-		htmlTemplates:    htmlTmpls,
-		textTemplates:    textTmpls,
+		templates:        tmpls,
 		now:              deps.Now,
 	}, nil
 }
@@ -102,13 +60,6 @@ type emailPayload struct {
 }
 
 func (b *EmailBuilder) Build(ctx context.Context, item email.ClaimedItem) (email.Message, error) {
-	htmlTmpl, hasHTMLTemplate := b.htmlTemplates[string(item.Kind)]
-	textTmpl, hasTextTemplate := b.textTemplates[string(item.Kind)]
-
-	if !hasHTMLTemplate && !hasTextTemplate {
-		return email.Message{}, errors.New("build email: message has no body")
-	}
-
 	user, err := b.users.GetByID(ctx, item.UserID)
 	if err != nil {
 		return email.Message{}, email.ErrNothingToSend
@@ -121,51 +72,39 @@ func (b *EmailBuilder) Build(ctx context.Context, item email.ClaimedItem) (email
 		payload  = emailPayload{Email: user.Email}
 		tokenTTL = b.getTokenTTL(item.Kind)
 	)
-	if item.Kind == email.KindAlreadyRegistered {
+	switch item.Kind {
+	case email.KindAlreadyRegistered:
 		payload.Link = b.baseURL + "/login"
-	} else {
-		token, err = generateOpaqueToken()
+	case email.KindVerifyEmail, email.KindResetPassword:
+		token, err = opaquetoken.Generate()
 		if err != nil {
 			return email.Message{}, err
 		}
-		payload.Link = fmt.Sprintf("%s/%s?token=%s", b.baseURL, getKindURLSlug(item.Kind), base64.RawURLEncoding.EncodeToString(token))
+		payload.Link = fmt.Sprintf("%s/%s?token=%s", b.baseURL, getKindURLSlug(item.Kind), opaquetoken.Encode(token))
 		payload.ExpiresIn = durafmt.Parse(tokenTTL).String()
+	default:
+		return email.Message{}, fmt.Errorf("build email: unsupported kind %s", item.Kind)
 	}
 
-	message := email.Message{
-		To:      user.Email,
-		Subject: getKindSubject(item.Kind),
+	message, err := b.templates.Render(item.Kind, payload)
+	if err != nil {
+		return email.Message{}, fmt.Errorf("build email: %w", err)
 	}
 
-	if hasHTMLTemplate {
-		var buf bytes.Buffer
-		if err := htmlTmpl.Execute(&buf, payload); err != nil {
-			return email.Message{}, fmt.Errorf("build email: %w", err)
-		}
-
-		message.HTML = buf.String()
-	}
-
-	if hasTextTemplate {
-		var buf bytes.Buffer
-		if err := textTmpl.Execute(&buf, payload); err != nil {
-			return email.Message{}, fmt.Errorf("build email: %w", err)
-		}
-
-		message.Text = buf.String()
-	}
+	message.To = user.Email
+	message.Subject = getKindSubject(item.Kind)
 
 	if token == nil {
 		return message, nil
 	}
 
 	now := b.now()
-	sha256Token := sha256.Sum256(token)
+	tokenHash := opaquetoken.Hash(token)
 
 	userToken, err := NewUserToken(NewUserTokenParams{
 		UserID:    user.ID,
 		Purpose:   TokenPurpose(item.Kind),
-		TokenHash: sha256Token[:],
+		TokenHash: tokenHash,
 		TTL:       tokenTTL,
 	}, now)
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,22 +13,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dung204/taskapi/internal/pubsub"
+	"github.com/dung204/taskapi/internal/testutil"
 )
+
+func TestMain(m *testing.M) { os.Exit(testutil.RunMain(m)) }
 
 const waitTimeout = 5 * time.Second
 
 var topicSeq atomic.Int64
 
-// newTestSubscriber connects to TEST_DATABASE_URL (the test is skipped when it
-// is unset) and returns a subscriber, the pool it uses and a topic no other test
+// newTestSubscriber connects to the package's test database (see testutil.RunMain) and returns a subscriber, the pool it uses and a topic no other test
 // listens on. LISTEN/NOTIFY needs no schema and leaves no data behind.
 func newTestSubscriber(t *testing.T) (*pubsub.PostgresSubscriber, *pgxpool.Pool, string) {
 	t.Helper()
 
-	url := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	url := testutil.DatabaseURL(t)
 
 	pool, err := pgxpool.New(t.Context(), url)
 	if err != nil {

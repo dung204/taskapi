@@ -9,6 +9,7 @@ import (
 )
 
 func TestByIP(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		remoteAddr string
@@ -38,6 +39,7 @@ func TestByIP(t *testing.T) {
 }
 
 func TestRateLimitRetryAfter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		retryAfter time.Duration
 		want       int

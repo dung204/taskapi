@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:24px;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;padding:32px;">
+            <tr>
+              <td>
+                <h1 style="margin:0 0 16px;font-size:20px;">You have been added to a task</h1>
+                <p>{{.OwnerEmail}} added you to a task.</p>
+                <table role="presentation" cellpadding="0" cellspacing="0" style="margin:16px 0;font-size:14px;">
+                  <tr><td style="padding:2px 16px 2px 0;color:#666;">Task</td><td><strong>{{.TaskTitle}}</strong></td></tr>
+                  <tr><td style="padding:2px 16px 2px 0;color:#666;">Owner</td><td>{{.OwnerEmail}}</td></tr>
+                  <tr><td style="padding:2px 16px 2px 0;color:#666;">Your role</td><td>{{.Role}}</td></tr>
+                </table>
+                <p style="margin:24px 0;">
+                  <a href="{{.Link}}" style="background:#2563eb;color:#fff;text-decoration:none;padding:12px 20px;border-radius:6px;display:inline-block;">Open task</a>
+                </p>
+                <p style="font-size:13px;color:#666;">Or paste this link into your browser:<br>{{.Link}}</p>
+                <p style="font-size:13px;color:#666;">You are receiving this because you were added to the task by its owner.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

@@ -3,8 +3,6 @@ package auth
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
@@ -13,6 +11,7 @@ import (
 	"github.com/dung204/taskapi/internal/apperr"
 	"github.com/dung204/taskapi/internal/email"
 	"github.com/dung204/taskapi/internal/metrics"
+	"github.com/dung204/taskapi/internal/opaquetoken"
 )
 
 type Tokens struct {
@@ -31,33 +30,33 @@ type RefreshToken struct {
 type Service struct {
 	refreshTTL         time.Duration
 	refreshGracePeriod time.Duration
-	tx                 Transactor
+	tx                 transactor
 	sessions           SessionStore
 	userTokens         UserTokenStore
 	users              UserStore
 	outbox             OutboxWriter
-	issuer             TokenIssuer
+	accessTokenIssuer  AccessTokenIssuer
 	hasher             Hasher
 	dummyHash          string
 	revoker            Revoker
 	loginLimiter       LoginLimiter
-	mailRequestLimiter MailRequestLimiter
+	authMailLimiter    AuthMailLimiter
 	metrics            *metrics.Auth
 }
 
 type ServiceDeps struct {
 	RefreshTTL         time.Duration
 	RefreshGracePeriod time.Duration
-	Tx                 Transactor
+	Tx                 transactor
 	Sessions           SessionStore
 	UserTokens         UserTokenStore
 	Users              UserStore
 	Outbox             OutboxWriter
-	Issuer             TokenIssuer
+	AccessTokenIssuer  AccessTokenIssuer
 	Hasher             Hasher
 	Revoker            Revoker
 	LoginLimiter       LoginLimiter
-	MailRequestLimiter MailRequestLimiter
+	AuthMailLimiter    AuthMailLimiter
 	Metrics            *metrics.Auth
 }
 
@@ -81,12 +80,12 @@ func NewService(deps ServiceDeps) (*Service, error) {
 		userTokens:         deps.UserTokens,
 		users:              deps.Users,
 		outbox:             deps.Outbox,
-		issuer:             deps.Issuer,
+		accessTokenIssuer:  deps.AccessTokenIssuer,
 		hasher:             deps.Hasher,
 		dummyHash:          dummyHash,
 		revoker:            deps.Revoker,
 		loginLimiter:       deps.LoginLimiter,
-		mailRequestLimiter: deps.MailRequestLimiter,
+		authMailLimiter:    deps.AuthMailLimiter,
 		metrics:            deps.Metrics,
 	}, nil
 }
@@ -95,7 +94,7 @@ func NewService(deps ServiceDeps) (*Service, error) {
 // is positive the per-email mail limit was hit: nothing was created or queued,
 // and the caller should answer 429.
 func (s Service) Register(ctx context.Context, mail, password string, now time.Time) (retryAfter time.Duration, err error) {
-	mailAddr, err := parseEmail(mail)
+	mailAddr, err := email.Parse(mail)
 	if err != nil {
 		return 0, err
 	}
@@ -110,7 +109,7 @@ func (s Service) Register(ctx context.Context, mail, password string, now time.T
 	rctx, cancel := context.WithTimeout(ctx, limiterTimeout)
 	defer cancel()
 
-	retryAfter, err = s.mailRequestLimiter.Allow(rctx, mailAddr)
+	retryAfter, err = s.authMailLimiter.Allow(rctx, mailAddr)
 	switch {
 	case err != nil:
 		return 0, err
@@ -185,7 +184,7 @@ func (s Service) notifyAlreadyRegistered(ctx context.Context, mailAddr string, n
 func (s Service) Login(ctx context.Context, mail, password string, userAgent *string, now time.Time) (tokens Tokens, retryAfter time.Duration, err error) {
 	defer func() { s.metrics.LoginsInc(loginResult(err)) }()
 
-	mailAddr, err := parseEmail(mail)
+	mailAddr, err := email.Parse(mail)
 	if err != nil {
 		return Tokens{}, 0, err
 	}
@@ -239,15 +238,15 @@ func (s Service) Login(ctx context.Context, mail, password string, userAgent *st
 		return Tokens{}, 0, ErrAccountDisabled
 	}
 
-	refresh, err := generateOpaqueToken()
+	refresh, err := opaquetoken.Generate()
 	if err != nil {
 		return Tokens{}, 0, err
 	}
 
-	hash := sha256.Sum256(refresh)
+	hash := opaquetoken.Hash(refresh)
 	session, err := NewSession(NewSessionParams{
 		UserID:           user.ID,
-		RefreshTokenHash: hash[:],
+		RefreshTokenHash: hash,
 		UserAgent:        userAgent,
 		TTL:              s.refreshTTL,
 	}, now)
@@ -287,17 +286,13 @@ func loginResult(err error) string {
 }
 
 func (s Service) Refresh(ctx context.Context, refreshToken string, now time.Time) (Tokens, error) {
-	raw, err := decodeOpaqueToken(refreshToken)
-	if errors.Is(err, ErrInvalidToken) {
+	raw, err := opaquetoken.Decode(refreshToken)
+	if err != nil {
 		return Tokens{}, ErrInvalidRefreshTokenNeedLogout
 	}
 
-	if err != nil {
-		return Tokens{}, err
-	}
-
-	hash := sha256.Sum256(raw)
-	oldHash := hash[:]
+	hash := opaquetoken.Hash(raw)
+	oldHash := hash
 	session, err := s.sessions.GetByRefreshTokenHash(ctx, oldHash)
 
 	switch {
@@ -337,7 +332,7 @@ func (s Service) Refresh(ctx context.Context, refreshToken string, now time.Time
 	}
 
 	if match == RefreshGrace {
-		access, accessExp, err := s.issuer.Issue(session.UserID, session.ID, now)
+		access, accessExp, err := s.accessTokenIssuer.Issue(session.UserID, session.ID, now)
 		if err != nil {
 			return Tokens{}, err
 		}
@@ -348,13 +343,13 @@ func (s Service) Refresh(ctx context.Context, refreshToken string, now time.Time
 		}, nil
 	}
 
-	newRaw, err := generateOpaqueToken()
+	newRaw, err := opaquetoken.Generate()
 	if err != nil {
 		return Tokens{}, err
 	}
 
-	newHash := sha256.Sum256(newRaw)
-	err = s.sessions.Rotate(ctx, session.ID, oldHash, newHash[:], now)
+	newHash := opaquetoken.Hash(newRaw)
+	err = s.sessions.Rotate(ctx, session.ID, oldHash, newHash, now)
 	switch {
 	case errors.Is(err, ErrSessionNotRotated):
 		// Another request rotated this session first (two tabs at once).
@@ -367,7 +362,7 @@ func (s Service) Refresh(ctx context.Context, refreshToken string, now time.Time
 }
 
 func (s Service) issueTokenPair(userID, sessionID uuid.UUID, refresh []byte, refreshExpiresAt, now time.Time) (Tokens, error) {
-	access, accessExp, err := s.issuer.Issue(userID, sessionID, now)
+	access, accessExp, err := s.accessTokenIssuer.Issue(userID, sessionID, now)
 	if err != nil {
 		return Tokens{}, err
 	}
@@ -376,20 +371,20 @@ func (s Service) issueTokenPair(userID, sessionID uuid.UUID, refresh []byte, ref
 		AccessToken:     access,
 		AccessExpiresIn: accessExp.Sub(now),
 		Refresh: &RefreshToken{
-			Value:     base64.RawURLEncoding.EncodeToString(refresh),
+			Value:     opaquetoken.Encode(refresh),
 			ExpiresAt: refreshExpiresAt,
 		},
 	}, nil
 }
 
 func (s Service) Logout(ctx context.Context, refreshToken string, now time.Time) error {
-	raw, err := decodeOpaqueToken(refreshToken)
+	raw, err := opaquetoken.Decode(refreshToken)
 	if err != nil {
 		return nil
 	}
 
-	hash := sha256.Sum256(raw)
-	session, err := s.sessions.GetByRefreshTokenHash(ctx, hash[:])
+	hash := opaquetoken.Hash(raw)
+	session, err := s.sessions.GetByRefreshTokenHash(ctx, hash)
 	switch {
 	case errors.Is(err, ErrSessionNotFound):
 		return nil
@@ -424,7 +419,7 @@ func (s Service) LogoutAll(ctx context.Context, userID uuid.UUID, now time.Time)
 }
 
 func (s Service) SendVerificationMail(ctx context.Context, mail string, now time.Time) (retryAfter time.Duration, err error) {
-	mailAddr, err := parseEmail(mail)
+	mailAddr, err := email.Parse(mail)
 	if err != nil {
 		return 0, err
 	}
@@ -432,7 +427,7 @@ func (s Service) SendVerificationMail(ctx context.Context, mail string, now time
 	rctx, cancel := context.WithTimeout(ctx, limiterTimeout)
 	defer cancel()
 
-	retryAfter, err = s.mailRequestLimiter.Allow(rctx, mailAddr)
+	retryAfter, err = s.authMailLimiter.Allow(rctx, mailAddr)
 	switch {
 	case err != nil:
 		return 0, err
@@ -441,15 +436,12 @@ func (s Service) SendVerificationMail(ctx context.Context, mail string, now time
 	}
 
 	user, err := s.users.GetByEmail(ctx, mailAddr)
-	if errors.Is(err, ErrUserNotFound) {
+	switch {
+	case errors.Is(err, ErrUserNotFound):
 		return 0, nil
-	}
-
-	if err != nil {
+	case err != nil:
 		return 0, err
-	}
-
-	if user.EmailVerifiedAt != nil {
+	case user.EmailVerifiedAt != nil:
 		return 0, nil
 	}
 
@@ -466,15 +458,15 @@ func (s Service) SendVerificationMail(ctx context.Context, mail string, now time
 }
 
 func (s Service) VerifyEmail(ctx context.Context, token string, now time.Time) error {
-	raw, err := decodeOpaqueToken(token)
+	raw, err := opaquetoken.Decode(token)
 	if err != nil {
-		return err
+		return ErrInvalidToken
 	}
 
-	hash := sha256.Sum256(raw)
+	hash := opaquetoken.Hash(raw)
 
 	return s.tx.WithTx(ctx, func(s Stores) error {
-		userID, err := s.UserTokens.Consume(ctx, hash[:], PurposeVerifyEmail, now)
+		userID, err := s.UserTokens.Consume(ctx, hash, PurposeVerifyEmail, now)
 		if err != nil {
 			return err
 		}
@@ -484,7 +476,7 @@ func (s Service) VerifyEmail(ctx context.Context, token string, now time.Time) e
 }
 
 func (s Service) SendForgotPasswordMail(ctx context.Context, mail string, now time.Time) (retryAfter time.Duration, err error) {
-	mailAddr, err := parseEmail(mail)
+	mailAddr, err := email.Parse(mail)
 	if err != nil {
 		return 0, err
 	}
@@ -492,7 +484,7 @@ func (s Service) SendForgotPasswordMail(ctx context.Context, mail string, now ti
 	rctx, cancel := context.WithTimeout(ctx, limiterTimeout)
 	defer cancel()
 
-	retryAfter, err = s.mailRequestLimiter.Allow(rctx, mailAddr)
+	retryAfter, err = s.authMailLimiter.Allow(rctx, mailAddr)
 	switch {
 	case err != nil:
 		return 0, err
@@ -522,9 +514,9 @@ func (s Service) SendForgotPasswordMail(ctx context.Context, mail string, now ti
 }
 
 func (s Service) ResetPassword(ctx context.Context, token, password string, now time.Time) error {
-	raw, err := decodeOpaqueToken(token)
+	raw, err := opaquetoken.Decode(token)
 	if err != nil {
-		return err
+		return ErrInvalidToken
 	}
 
 	pass, err := parsePassword(password)
@@ -537,13 +529,13 @@ func (s Service) ResetPassword(ctx context.Context, token, password string, now 
 		return err
 	}
 
-	tokenHash := sha256.Sum256(raw)
+	tokenHash := opaquetoken.Hash(raw)
 
 	var userID uuid.UUID
 
 	if err := s.tx.WithTx(ctx, func(st Stores) error {
 		var err error
-		userID, err = st.UserTokens.Consume(ctx, tokenHash[:], PurposeResetPassword, now)
+		userID, err = st.UserTokens.Consume(ctx, tokenHash, PurposeResetPassword, now)
 		if err != nil {
 			return err
 		}

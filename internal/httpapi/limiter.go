@@ -8,7 +8,16 @@ import (
 	"time"
 )
 
+// Limiter decides whether the client identified by a key may make a request now.
+// It is satisfied by [ratelimit.Limiter].
 type Limiter interface {
+	// Allow spends one token of the bucket of key, if there is one.
+	//
+	// Returns:
+	//   - ok - whether the request is allowed.
+	//   - retryAfter - how long to wait before retrying when the request is not
+	//     allowed; zero when it is allowed. The middleware sends it as the
+	//     Retry-After header of the 429 response.
 	Allow(key string) (ok bool, retryAfter time.Duration)
 }
 

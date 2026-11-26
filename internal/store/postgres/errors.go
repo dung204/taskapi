@@ -9,6 +9,17 @@ import (
 	"github.com/dung204/taskapi/internal/apperr"
 )
 
+const (
+	pgUniqueViolation     = "23505"
+	pgForeignKeyViolation = "23503"
+)
+
+const (
+	pgAdminShutdown    = "57P01"
+	pgCrashShutdown    = "57P02"
+	pgCannotConnectNow = "57P03"
+)
+
 func formatPostgresError(op, itemName, itemValue string, err error) error {
 	val := ""
 	if itemValue != "" {
@@ -21,7 +32,7 @@ func formatPostgresError(op, itemName, itemValue string, err error) error {
 
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		switch pgErr.Code {
-		case "57P01", "57P02", "57P03":
+		case pgAdminShutdown, pgCrashShutdown, pgCannotConnectNow:
 			return fmt.Errorf("postgres: %s %s%s: %w: %w", op, itemName, val, apperr.ErrServiceUnavailable, err)
 		}
 	}

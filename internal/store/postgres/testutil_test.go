@@ -1,56 +1,22 @@
 package postgres
 
 import (
-	"context"
-	"fmt"
 	"os"
-	"strings"
 	"testing"
+	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
 
+	"github.com/dung204/taskapi/internal/auth/authtest"
 	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
 	"github.com/dung204/taskapi/internal/task"
-	"github.com/dung204/taskapi/migrations"
+	"github.com/dung204/taskapi/internal/testutil"
 )
 
-// TestMain migrates the test database once, before any test runs. A failed
-// migration aborts the whole package: tests must never run against a schema
-// that is missing or half applied. Without TEST_DATABASE_URL it does nothing
-// and the database tests skip themselves.
-func TestMain(m *testing.M) {
-	if url := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")); url != "" {
-		if err := migrateTestDB(url); err != nil {
-			fmt.Fprintf(os.Stderr, "postgres tests: migrate test database: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	os.Exit(m.Run())
-}
-
-func migrateTestDB(url string) error {
-	ctx := context.Background()
-
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-	defer pool.Close()
-
-	provider, err := goose.NewProvider(
-		goose.DialectPostgres, stdlib.OpenDBFromPool(pool), migrations.FS,
-	)
-	if err != nil {
-		return fmt.Errorf("goose provider: %w", err)
-	}
-
-	if _, err := provider.Up(ctx); err != nil {
-		return fmt.Errorf("goose up: %w", err)
-	}
-	return nil
-}
+// TestMain clones the migrated template database for this package (see
+// testutil.RunMain); the tests run on the clone, which is dropped afterwards.
+func TestMain(m *testing.M) { os.Exit(testutil.RunMain(m)) }
 
 func truncateTable(tb testing.TB, pool *pgxpool.Pool, tableName string) {
 	tb.Helper()
@@ -72,8 +38,13 @@ func newPGStore(tb testing.TB, url string, tableName string) task.Store {
 	}
 	tb.Cleanup(func() { pool.Close() })
 
+	// Invitations and members reference tasks, and TRUNCATE refuses to empty a
+	// referenced table unless the referencing ones are truncated with it.
+	if tableName == "tasks" {
+		tableName = "task_members, task_invitations, tasks"
+	}
 	truncateTable(tb, pool, tableName)
-	return NewTaskStore(pool)
+	return NewTaskStore(sqlcgen.New(pool))
 }
 
 // newAuthPool connects to the test database and removes every user except the
@@ -102,4 +73,41 @@ func newAuthPool(tb testing.TB, url string) *pgxpool.Pool {
 func newAuthQueries(tb testing.TB, url string) *sqlcgen.Queries {
 	tb.Helper()
 	return sqlcgen.New(newAuthPool(tb, url))
+}
+
+// newShareDeps gives the invitation and member suites empty stores. It clears
+// tasks (and with them invitations and members) and removes the users of the
+// previous test.
+func newShareDeps(t *testing.T, url string) ShareDeps {
+	t.Helper()
+	pool := newAuthPool(t, url)
+	truncateTable(t, pool, "task_members, task_invitations, tasks")
+
+	q := sqlcgen.New(pool)
+	users := NewUserStore(q)
+	tasks := NewTaskStore(q)
+
+	newUser := func() (uuid.UUID, string) {
+		u := authtest.SeedUser(t.Context(), t, users)
+		return u.ID, u.Email
+	}
+	newTask := func() (task.Task, string) {
+		ownerID, ownerEmail := newUser()
+		nt, err := task.New(task.NewParams{Title: "shared task", OwnerID: ownerID, Status: task.StatusTodo}, time.Now())
+		if err != nil {
+			t.Fatalf("task.New: %v", err)
+		}
+		created, err := tasks.Create(t.Context(), nt)
+		if err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+		return created, ownerEmail
+	}
+
+	return ShareDeps{
+		Invitations: NewInvitationStore(q),
+		Members:     NewMemberStore(q),
+		NewTask:     newTask,
+		NewUser:     newUser,
+	}
 }

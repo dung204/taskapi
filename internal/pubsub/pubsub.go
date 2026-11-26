@@ -19,11 +19,15 @@ type Event struct {
 
 // Subscriber receives events published to a topic.
 type Subscriber interface {
-	// Subscribe starts listening on topic and returns a channel of events.
+	// Subscribe starts listening on topic. The subscription lasts until ctx is
+	// canceled; implementations close the returned channel once it ends, so
+	// callers can range over it.
 	//
-	// The subscription lasts until ctx is canceled. Implementations close the
-	// returned channel once the subscription ends, so callers can range over
-	// it. If the subscription cannot be established, Subscribe returns a
-	// non-nil error and a nil channel.
-	Subscribe(ctx context.Context, topic string) (<-chan Event, error)
+	// Returns:
+	//   - events - the channel on which the [Event]s of the topic are delivered.
+	//     It is nil if the subscription could not be established.
+	//
+	// Returns the following errors:
+	//   - a non-nil error - if the subscription could not be established.
+	Subscribe(ctx context.Context, topic string) (events <-chan Event, err error)
 }

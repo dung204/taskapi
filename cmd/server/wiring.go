@@ -15,7 +15,6 @@ import (
 	"github.com/dung204/taskapi/internal/metrics"
 	"github.com/dung204/taskapi/internal/pubsub"
 	"github.com/dung204/taskapi/internal/ratelimit"
-	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/store/postgres"
 	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
 	"github.com/dung204/taskapi/internal/store/redis"
@@ -33,16 +32,12 @@ type app struct {
 func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra infra) (app, error) {
 	// --- Stores ---------------------------------------------------------------
 
-	var tasks task.Store
-	switch cfg.tasks.store {
-	case "memory":
-		tasks = memory.NewTaskStore()
-	case "postgres":
-		tasks = postgres.NewTaskStore(infra.pool)
-	}
-
 	queries := sqlcgen.New(infra.pool)
 	var (
+		tasks       = postgres.NewTaskStore(queries)
+		invitations = postgres.NewInvitationStore(queries)
+		members     = postgres.NewMemberStore(queries)
+
 		users      = postgres.NewUserStore(queries)
 		userTokens = postgres.NewUserTokenStore(queries)
 		sessions   = postgres.NewSessionStore(queries)
@@ -52,9 +47,12 @@ func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra i
 
 	// --- Metrics --------------------------------------------------------------
 
+	taskMetrics := metrics.NewTask(reg)
+
 	metrics := httpapi.Metrics{
 		HTTP: metrics.NewHTTP(reg),
 		Auth: metrics.NewAuth(reg),
+		Task: taskMetrics,
 	}
 
 	// --- Auth building blocks -------------------------------------------------
@@ -87,35 +85,55 @@ func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra i
 			Backoff:      cfg.login.backoff,
 			Window:       cfg.login.window,
 		})
-		mailRequestLimiter = redis.NewMailRequestLimiter(infra.client, redis.MailRequestLimiterOpts{
-			RequestCooldown:  cfg.mail.requestCooldown,
-			RequestHourlyMax: cfg.mail.requestHourlyMax,
+		mailRequestLimiter = redis.NewAuthMailLimiter(infra.client, redis.AuthMailLimiterOpts{
+			RequestCooldown:  cfg.authMail.requestCooldown,
+			RequestHourlyMax: cfg.authMail.requestHourlyMax,
+		})
+
+		inviteMailLimiter = redis.NewInviteMailLimiter(infra.client, redis.InviteMailLimiterOpts{
+			RequestCooldown:  cfg.inviteMail.requestCooldown,
+			RequestHourlyMax: cfg.inviteMail.requestHourlyMax,
+		})
+		ownerInviteLimiter = redis.NewOwnerInviteLimiter(infra.client, redis.OwnerInviteLimiterOpts{
+			InviteHourlyMax: cfg.inviteOwner.hourlyMax,
 		})
 	)
 
-	// --- Auth service ---------------------------------------------------------
+	// --- Services ---------------------------------------------------------
 
 	authService, err := auth.NewService(auth.ServiceDeps{
 		RefreshTTL:         cfg.tokens.refreshTTL,
 		RefreshGracePeriod: cfg.tokens.refreshGrace,
 		// The factory must build stores from the transaction's queries, not reuse the pool-bound stores.
-		Tx:         postgres.NewTransactor(infra.pool, postgres.NewAuthStores),
-		Sessions:   sessions,
-		UserTokens: userTokens,
-		Users:      users,
-		Outbox:     outbox,
-		Issuer:     jwtService,
-		Hasher:     hasher,
-		Revoker:    auth.NewFailOpenRevoker(revoker, logger, metrics.Auth), // logout succeeds when Redis is down
-		Metrics:    metrics.Auth,
+		Tx:                postgres.NewTransactor(infra.pool, postgres.NewAuthStores),
+		Sessions:          sessions,
+		UserTokens:        userTokens,
+		Users:             users,
+		Outbox:            outbox,
+		AccessTokenIssuer: jwtService,
+		Hasher:            hasher,
+		Revoker:           auth.NewFailOpenRevoker(revoker, logger, metrics.Auth), // logout succeeds when Redis is down
+		Metrics:           metrics.Auth,
 		// Throttling is best effort: when Redis is down, logins and mail requests
 		// go through unthrottled instead of failing.
-		LoginLimiter:       auth.NewFailOpenLoginLimiter(loginLimiter, logger, metrics.Auth),
-		MailRequestLimiter: auth.NewFailOpenMailRequestLimiter(mailRequestLimiter, logger, metrics.Auth),
+		LoginLimiter:    auth.NewFailOpenLoginLimiter(loginLimiter, logger, metrics.Auth),
+		AuthMailLimiter: auth.NewFailOpenAuthMailLimiter(mailRequestLimiter, logger, metrics.Auth),
 	})
 	if err != nil {
 		return app{}, err
 	}
+
+	taskService := task.NewService(task.ServiceDeps{
+		Tx:          postgres.NewTransactor(infra.pool, postgres.NewTaskStores),
+		Tasks:       tasks,
+		Invitations: invitations,
+		Members:     members,
+		Users:       users,
+		Outbox:      outbox,
+		// Throttling is best effort: when Redis is down, invitations go through unthrottled.
+		InviteMailLimiter:  task.NewFailOpenInviteMailLimiter(inviteMailLimiter, logger, taskMetrics),
+		OwnerInviteLimiter: task.NewFailOpenOwnerInviteLimiter(ownerInviteLimiter, logger, taskMetrics),
+	})
 
 	// --- HTTP -----------------------------------------------------------------
 
@@ -136,7 +154,7 @@ func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra i
 	}
 
 	handler := httpapi.NewHandler(httpapi.HandlerDeps{
-		Tasks:    tasks,
+		Tasks:    taskService,
 		Auth:     authService,
 		Verifier: jwtService,
 		Revoker:  revoker,
@@ -162,7 +180,7 @@ func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra i
 		return app{}, err
 	}
 
-	builder, err := auth.NewEmailBuilder(auth.EmailBuilderDeps{
+	authBuilder, err := auth.NewEmailBuilder(auth.EmailBuilderDeps{
 		BaseURL:          cfg.appBaseURL,
 		VerifyEmailTTL:   cfg.tokens.verifyEmailTTL,
 		ResetPasswordTTL: cfg.tokens.resetPasswordTTL,
@@ -171,6 +189,24 @@ func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra i
 	})
 	if err != nil {
 		return app{}, err
+	}
+
+	taskBuilder, err := task.NewEmailBuilder(task.EmailBuilderDeps{
+		BaseURL:     cfg.appBaseURL,
+		Tasks:       tasks,
+		Invitations: invitations,
+	})
+	if err != nil {
+		return app{}, err
+	}
+
+	// One outbox worker serves every kind; each kind goes to the package that owns it.
+	builder := email.Router{
+		email.KindVerifyEmail:       authBuilder,
+		email.KindResetPassword:     authBuilder,
+		email.KindAlreadyRegistered: authBuilder,
+		email.KindTaskInvitation:    taskBuilder,
+		email.KindTaskAdded:         taskBuilder,
 	}
 
 	// --- Background workers ---------------------------------------------------
@@ -206,10 +242,19 @@ func buildApp(cfg config, logger *slog.Logger, reg *prometheus.Registry, infra i
 			Interval: cfg.cleanup.interval,
 			Logger:   logger,
 		},
-		worker.CleanupTask{Name: "user_tokens", Run: userTokens.DeleteExpired},
-		worker.CleanupTask{Name: "sessions", Run: sessions.DeleteExpired},
-		worker.CleanupTask{Name: "outbox_sent", Run: func(ctx context.Context, now time.Time, limit int32) (int64, error) {
+		worker.CleanupTask{Name: "expired_user_tokens", Run: userTokens.DeleteExpired},
+		worker.CleanupTask{Name: "expired_sessions", Run: sessions.DeleteExpired},
+		worker.CleanupTask{Name: "sent_outbox", Run: func(ctx context.Context, now time.Time, limit int32) (int64, error) {
 			return outbox.DeleteSent(ctx, now.Add(-cfg.outbox.sentRetention), limit)
+		}},
+		worker.CleanupTask{Name: "expired_pending_task_invitations", Run: func(ctx context.Context, now time.Time, limit int32) (int64, error) {
+			cnt, err := invitations.DeleteExpiredPending(ctx, now, limit)
+			if err != nil {
+				return 0, err
+			}
+
+			taskMetrics.ExpiredInvitationsAdd(cnt)
+			return cnt, nil
 		}},
 	))
 

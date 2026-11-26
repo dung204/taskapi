@@ -11,13 +11,17 @@ import (
 
 	"github.com/dung204/taskapi/internal/auth"
 	"github.com/dung204/taskapi/internal/store/postgres/sqlcgen"
+	"github.com/dung204/taskapi/internal/task"
 )
 
 type UserStore struct {
 	q *sqlcgen.Queries
 }
 
-var _ auth.UserStore = (*UserStore)(nil)
+var (
+	_ auth.UserStore  = (*UserStore)(nil)
+	_ task.UserLookup = (*UserStore)(nil)
+)
 
 func NewUserStore(q *sqlcgen.Queries) *UserStore {
 	return &UserStore{q: q}
@@ -30,15 +34,16 @@ func (s *UserStore) Create(ctx context.Context, u auth.User) error {
 	}
 
 	err := s.q.CreateUser(ctx, sqlcgen.CreateUserParams(u))
-	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" && pgErr.ConstraintName == "users_email_key" {
+	pgErr, isPgErr := errors.AsType[*pgconn.PgError](err)
+
+	switch {
+	case isPgErr && pgErr.Code == pgUniqueViolation && pgErr.ConstraintName == "users_email_key":
 		return auth.ErrEmailTaken
-	}
-
-	if err != nil {
+	case err != nil:
 		return formatError(err)
+	default:
+		return nil
 	}
-
-	return nil
 }
 
 // GetByEmail implements [auth.UserStore].
@@ -137,19 +142,30 @@ func (s *UserStore) SetTokensValidAfter(ctx context.Context, id uuid.UUID, after
 	return nil
 }
 
+// GetVerifiedUserIDByEmail implements [task.UserLookup].
+func (s *UserStore) GetVerifiedUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error) {
+	formatError := func(err error) error {
+		return formatPostgresError("get", "verified user ID by email", "", err)
+	}
+
+	id, err := s.q.GetVerifiedUserIDByEmail(ctx, email)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return uuid.Nil(), task.ErrUserNotFound
+	case err != nil:
+		return uuid.Nil(), formatError(err)
+	default:
+		return id, nil
+	}
+}
+
 func userFromRow(r sqlcgen.User) auth.User {
 	s := auth.User(r)
-	s.CreatedAt = s.CreatedAt.UTC()
-	s.UpdatedAt = s.UpdatedAt.UTC()
-	if s.EmailVerifiedAt != nil {
-		s.EmailVerifiedAt = new(s.EmailVerifiedAt.UTC())
-	}
-	if s.DisabledAt != nil {
-		s.DisabledAt = new(s.DisabledAt.UTC())
-	}
-	if s.TokensValidAfter != nil {
-		s.TokensValidAfter = new(s.TokensValidAfter.UTC())
-	}
+	s.CreatedAt = utc(s.CreatedAt)
+	s.UpdatedAt = utc(s.UpdatedAt)
+	s.EmailVerifiedAt = utcPtr(s.EmailVerifiedAt)
+	s.DisabledAt = utcPtr(s.DisabledAt)
+	s.TokensValidAfter = utcPtr(s.TokensValidAfter)
 
 	return s
 }

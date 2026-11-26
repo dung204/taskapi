@@ -22,3 +22,26 @@
 // [github.com/dung204/taskapi/internal/apperr.ErrInvalidInput], as with
 // [ErrInvalidKind].
 package email
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// maxAddressLen is the longest email address accepted, in bytes (the SMTP
+// path limit of RFC 5321).
+const maxAddressLen = 254
+
+var emailRegex = regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$`)
+
+// Parse trims and lowercases email and checks that it looks like a valid
+// address of at most 254 bytes. It returns the normalized address, or an error
+// wrapping [ErrInvalidEmail].
+func Parse(email string) (string, error) {
+	mail := strings.ToLower(strings.TrimSpace(email))
+	if !emailRegex.MatchString(mail) || len(mail) > maxAddressLen {
+		return "", fmt.Errorf("%w: email must be a valid email and have at most %d characters", ErrInvalidEmail, maxAddressLen)
+	}
+	return mail, nil
+}

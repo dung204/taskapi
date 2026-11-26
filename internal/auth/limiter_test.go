@@ -162,7 +162,7 @@ func TestFailOpenMailRequestLimiter(t *testing.T) {
 		next := &fakeMailRequestLimiter{retryAfter: 30 * time.Second}
 		logger, rec := logtest.New()
 		reg := prometheus.NewRegistry()
-		l := NewFailOpenMailRequestLimiter(next, logger, metrics.NewAuth(reg))
+		l := NewFailOpenAuthMailLimiter(next, logger, metrics.NewAuth(reg))
 
 		retryAfter, err := l.Allow(ctx, addr)
 		if err != nil || retryAfter != 30*time.Second {
@@ -183,7 +183,7 @@ func TestFailOpenMailRequestLimiter(t *testing.T) {
 		next := &fakeMailRequestLimiter{retryAfter: time.Minute, err: errBackend}
 		logger, rec := logtest.New()
 		reg := prometheus.NewRegistry()
-		l := NewFailOpenMailRequestLimiter(next, logger, metrics.NewAuth(reg))
+		l := NewFailOpenAuthMailLimiter(next, logger, metrics.NewAuth(reg))
 
 		retryAfter, err := l.Allow(ctx, addr)
 		if err != nil || retryAfter != 0 {
@@ -200,7 +200,7 @@ func TestFailOpenMailRequestLimiter(t *testing.T) {
 	})
 
 	t.Run("works without metrics or a logger", func(t *testing.T) {
-		l := NewFailOpenMailRequestLimiter(&fakeMailRequestLimiter{err: errBackend}, nil, nil)
+		l := NewFailOpenAuthMailLimiter(&fakeMailRequestLimiter{err: errBackend}, nil, nil)
 
 		if retryAfter, err := l.Allow(ctx, addr); err != nil || retryAfter != 0 {
 			t.Errorf("Allow() = %v, %v, want 0, nil", retryAfter, err)

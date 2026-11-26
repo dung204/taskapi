@@ -20,7 +20,7 @@ import (
 // testRedisURL, testDBURL, testIssuer, testAudience, testSMTPHost and
 // testSMTPFrom are the REDIS_URL, DATABASE_URL, JWT_ISSUER, JWT_AUDIENCES,
 // SMTP_HOST and SMTP_FROM every TestLoadConfig case starts
-// with, because loadConfig requires valid ones whatever TASKS_STORE is. A case
+// with, because loadConfig requires valid ones. A case
 // overrides them by setting the variable.
 const (
 	testRedisURL = "redis://localhost:6379/0"
@@ -83,9 +83,9 @@ func checkLoad[T any](t *testing.T, load func(lookupFunc) (T, error), base map[s
 }
 
 func TestLoadDB(t *testing.T) {
-	checkLoad(t, loadDB, nil, []loadCase[db]{
-		{name: "valid DATABASE_URL", env: map[string]string{"DATABASE_URL": testDBURL}, want: db{url: testDBURL, host: "localhost", name: "tasks"}},
-		{name: "host and name are extracted", env: map[string]string{"DATABASE_URL": "postgres://u:p@host:5432/db"}, want: db{url: "postgres://u:p@host:5432/db", host: "host", name: "db"}},
+	checkLoad(t, loadDB, nil, []loadCase[dbCfg]{
+		{name: "valid DATABASE_URL", env: map[string]string{"DATABASE_URL": testDBURL}, want: dbCfg{url: testDBURL, host: "localhost", name: "tasks"}},
+		{name: "host and name are extracted", env: map[string]string{"DATABASE_URL": "postgres://u:p@host:5432/db"}, want: dbCfg{url: "postgres://u:p@host:5432/db", host: "host", name: "db"}},
 		{name: "missing DATABASE_URL", wantErr: []string{"DATABASE_URL"}},
 		{name: "invalid DATABASE_URL", env: map[string]string{"DATABASE_URL": "abcd1234"}, wantErr: []string{"DATABASE_URL"}},
 	})
@@ -102,10 +102,10 @@ func TestLoadRedis(t *testing.T) {
 }
 
 func TestLoadLogging(t *testing.T) {
-	checkLoad(t, loadLogging, nil, []loadCase[logging]{
-		{name: "defaults", want: logging{format: "text", level: slog.LevelInfo}},
-		{name: "valid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "json"}, want: logging{format: "json", level: slog.LevelInfo}},
-		{name: "valid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "debug"}, want: logging{format: "text", level: slog.LevelDebug}},
+	checkLoad(t, loadLogging, nil, []loadCase[loggingCfg]{
+		{name: "defaults", want: loggingCfg{format: "text", level: slog.LevelInfo}},
+		{name: "valid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "json"}, want: loggingCfg{format: "json", level: slog.LevelInfo}},
+		{name: "valid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "debug"}, want: loggingCfg{format: "text", level: slog.LevelDebug}},
 		{name: "invalid LOG_FORMAT", env: map[string]string{"LOG_FORMAT": "yaml"}, wantErr: []string{"LOG_FORMAT", "yaml"}},
 		{name: "invalid LOG_LEVEL", env: map[string]string{"LOG_LEVEL": "loud"}, wantErr: []string{"LOG_LEVEL", "loud"}},
 		{name: "both invalid are reported together", env: map[string]string{"LOG_FORMAT": "yaml", "LOG_LEVEL": "loud"}, wantErr: []string{"LOG_FORMAT", "yaml", "LOG_LEVEL", "loud"}},
@@ -113,37 +113,33 @@ func TestLoadLogging(t *testing.T) {
 }
 
 func TestLoadTasks(t *testing.T) {
-	defaults := tasks{store: "memory", overdueScanEnabled: true, overdueScanInterval: 30 * time.Second}
-	with := func(mod func(*tasks)) tasks {
+	defaults := tasksCfg{overdueScanEnabled: true, overdueScanInterval: 30 * time.Second}
+	with := func(mod func(*tasksCfg)) tasksCfg {
 		c := defaults
 		mod(&c)
 		return c
 	}
 
-	checkLoad(t, loadTasks, nil, []loadCase[tasks]{
+	checkLoad(t, loadTasks, nil, []loadCase[tasksCfg]{
 		{name: "defaults", want: defaults},
-		{name: "TASKS_STORE=postgres", env: map[string]string{"TASKS_STORE": "postgres"}, want: with(func(c *tasks) { c.store = "postgres" })},
-		{name: "TASKS_STORE=memory", env: map[string]string{"TASKS_STORE": "memory"}, want: defaults},
-		{name: "valid OVERDUE_SCAN_WORKER_ENABLED", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "false"}, want: with(func(c *tasks) { c.overdueScanEnabled = false })},
-		{name: "OVERDUE_SCAN_WORKER_ENABLED=true with valid OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "true", "OVERDUE_SCAN_WORKER_INTERVAL": "500ms"}, want: with(func(c *tasks) { c.overdueScanInterval = 500 * time.Millisecond })},
-		{name: "OVERDUE_SCAN_WORKER_ENABLED=false with invalid OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "false", "OVERDUE_SCAN_WORKER_INTERVAL": "abc"}, want: with(func(c *tasks) { c.overdueScanEnabled = false })},
-		{name: "invalid TASKS_STORE", env: map[string]string{"TASKS_STORE": "foo"}, wantErr: []string{"TASKS_STORE", "foo"}},
+		{name: "valid OVERDUE_SCAN_WORKER_ENABLED", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "false"}, want: with(func(c *tasksCfg) { c.overdueScanEnabled = false })},
+		{name: "OVERDUE_SCAN_WORKER_ENABLED=true with valid OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "true", "OVERDUE_SCAN_WORKER_INTERVAL": "500ms"}, want: with(func(c *tasksCfg) { c.overdueScanInterval = 500 * time.Millisecond })},
+		{name: "OVERDUE_SCAN_WORKER_ENABLED=false with invalid OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "false", "OVERDUE_SCAN_WORKER_INTERVAL": "abc"}, want: with(func(c *tasksCfg) { c.overdueScanEnabled = false })},
 		{name: "invalid OVERDUE_SCAN_WORKER_ENABLED", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "maybe"}, wantErr: []string{"OVERDUE_SCAN_WORKER_ENABLED", "maybe"}},
 		{name: "OVERDUE_SCAN_WORKER_ENABLED=true with non-duration OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "true", "OVERDUE_SCAN_WORKER_INTERVAL": "abc"}, wantErr: []string{"OVERDUE_SCAN_WORKER_INTERVAL", "abc"}},
 		{name: "OVERDUE_SCAN_WORKER_ENABLED=true with zero OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "true", "OVERDUE_SCAN_WORKER_INTERVAL": "0s"}, wantErr: []string{"OVERDUE_SCAN_WORKER_INTERVAL", "0s"}},
 		{name: "OVERDUE_SCAN_WORKER_ENABLED=true with negative OVERDUE_SCAN_WORKER_INTERVAL", env: map[string]string{"OVERDUE_SCAN_WORKER_ENABLED": "true", "OVERDUE_SCAN_WORKER_INTERVAL": "-1s"}, wantErr: []string{"OVERDUE_SCAN_WORKER_INTERVAL", "-1s"}},
 		{name: "the old WORKER_ variables are ignored", env: map[string]string{"WORKER_ENABLED": "false", "WORKER_INTERVAL": "abc"}, want: defaults},
-		{name: "all invalid are reported together", env: map[string]string{"TASKS_STORE": "foo", "OVERDUE_SCAN_WORKER_ENABLED": "maybe"}, wantErr: []string{"TASKS_STORE", "foo", "OVERDUE_SCAN_WORKER_ENABLED", "maybe"}},
 	})
 }
 
 func TestLoadRateLimit(t *testing.T) {
-	checkLoad(t, loadRateLimit, nil, []loadCase[rateLimit]{
-		{name: "defaults", want: rateLimit{rps: 10, burst: 20}},
-		{name: "valid RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "0.5"}, want: rateLimit{rps: 0.5, burst: 20}},
-		{name: "valid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "5"}, want: rateLimit{rps: 10, burst: 5}},
-		{name: "RATE_LIMIT_RPS=0 disables rate limiting", env: map[string]string{"RATE_LIMIT_RPS": "0"}, want: rateLimit{}},
-		{name: "RATE_LIMIT_RPS=0 with invalid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_RPS": "0", "RATE_LIMIT_BURST": "abc"}, want: rateLimit{}},
+	checkLoad(t, loadRateLimit, nil, []loadCase[rateLimitCfg]{
+		{name: "defaults", want: rateLimitCfg{rps: 10, burst: 20}},
+		{name: "valid RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "0.5"}, want: rateLimitCfg{rps: 0.5, burst: 20}},
+		{name: "valid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_BURST": "5"}, want: rateLimitCfg{rps: 10, burst: 5}},
+		{name: "RATE_LIMIT_RPS=0 disables rate limiting", env: map[string]string{"RATE_LIMIT_RPS": "0"}, want: rateLimitCfg{}},
+		{name: "RATE_LIMIT_RPS=0 with invalid RATE_LIMIT_BURST", env: map[string]string{"RATE_LIMIT_RPS": "0", "RATE_LIMIT_BURST": "abc"}, want: rateLimitCfg{}},
 		{name: "non-numerical RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "abc"}, wantErr: []string{"RATE_LIMIT_RPS", "abc"}},
 		{name: "negative RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "-1"}, wantErr: []string{"RATE_LIMIT_RPS", "-1"}},
 		{name: "NaN RATE_LIMIT_RPS", env: map[string]string{"RATE_LIMIT_RPS": "NaN"}, wantErr: []string{"RATE_LIMIT_RPS", "NaN"}},
@@ -157,14 +153,14 @@ func TestLoadRateLimit(t *testing.T) {
 }
 
 func TestLoadCORS(t *testing.T) {
-	checkLoad(t, loadCORS, nil, []loadCase[cors]{
-		{name: "defaults", want: cors{maxAge: 10 * time.Minute}},
-		{name: "valid CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com"}, want: cors{origins: []string{"https://app.example.com"}, maxAge: 10 * time.Minute}},
-		{name: "multiple CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com, http://localhost:5173"}, want: cors{origins: []string{"https://app.example.com", "http://localhost:5173"}, maxAge: 10 * time.Minute}},
-		{name: "wildcard CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*"}, want: cors{origins: []string{"*"}, maxAge: 10 * time.Minute}},
-		{name: "valid CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "1h"}, want: cors{origins: []string{"*"}, maxAge: time.Hour}},
-		{name: "zero CORS_MAX_AGE omits the header", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "0"}, want: cors{origins: []string{"*"}}},
-		{name: "CORS_MAX_AGE is not checked without CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_MAX_AGE": "abc"}, want: cors{maxAge: 10 * time.Minute}},
+	checkLoad(t, loadCORS, nil, []loadCase[corsCfg]{
+		{name: "defaults", want: corsCfg{maxAge: 10 * time.Minute}},
+		{name: "valid CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com"}, want: corsCfg{origins: []string{"https://app.example.com"}, maxAge: 10 * time.Minute}},
+		{name: "multiple CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "https://app.example.com, http://localhost:5173"}, want: corsCfg{origins: []string{"https://app.example.com", "http://localhost:5173"}, maxAge: 10 * time.Minute}},
+		{name: "wildcard CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*"}, want: corsCfg{origins: []string{"*"}, maxAge: 10 * time.Minute}},
+		{name: "valid CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "1h"}, want: corsCfg{origins: []string{"*"}, maxAge: time.Hour}},
+		{name: "zero CORS_MAX_AGE omits the header", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "0"}, want: corsCfg{origins: []string{"*"}}},
+		{name: "CORS_MAX_AGE is not checked without CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_MAX_AGE": "abc"}, want: corsCfg{maxAge: 10 * time.Minute}},
 		{name: "invalid CORS_ALLOWED_ORIGINS", env: map[string]string{"CORS_ALLOWED_ORIGINS": "app.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "app.example.com"}},
 		{name: "wildcard mixed with origins", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*,https://app.example.com"}, wantErr: []string{"CORS_ALLOWED_ORIGINS", "*"}},
 		{name: "non-duration CORS_MAX_AGE", env: map[string]string{"CORS_ALLOWED_ORIGINS": "*", "CORS_MAX_AGE": "abc"}, wantErr: []string{"CORS_MAX_AGE", "abc"}},
@@ -174,11 +170,11 @@ func TestLoadCORS(t *testing.T) {
 }
 
 func TestLoadAddrs(t *testing.T) {
-	checkLoad(t, loadAddrs, nil, []loadCase[addrs]{
-		{name: "defaults", want: addrs{ops: "127.0.0.1:9091"}},
-		{name: "valid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ":6060"}, want: addrs{pprof: ":6060", ops: "127.0.0.1:9091"}},
-		{name: "empty PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ""}, want: addrs{ops: "127.0.0.1:9091"}},
-		{name: "valid OPS_ADDR", env: map[string]string{"OPS_ADDR": "localhost:9090"}, want: addrs{ops: "localhost:9090"}},
+	checkLoad(t, loadAddrs, nil, []loadCase[addrsCfg]{
+		{name: "defaults", want: addrsCfg{ops: "127.0.0.1:9091"}},
+		{name: "valid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ":6060"}, want: addrsCfg{pprof: ":6060", ops: "127.0.0.1:9091"}},
+		{name: "empty PPROF_ADDR", env: map[string]string{"PPROF_ADDR": ""}, want: addrsCfg{ops: "127.0.0.1:9091"}},
+		{name: "valid OPS_ADDR", env: map[string]string{"OPS_ADDR": "localhost:9090"}, want: addrsCfg{ops: "localhost:9090"}},
 		{name: "invalid PPROF_ADDR", env: map[string]string{"PPROF_ADDR": "6060"}, wantErr: []string{"PPROF_ADDR", "6060"}},
 		{name: "invalid OPS_ADDR", env: map[string]string{"OPS_ADDR": "9090"}, wantErr: []string{"OPS_ADDR", "9090"}},
 		{name: "both invalid are reported together", env: map[string]string{"PPROF_ADDR": "6060", "OPS_ADDR": "9090"}, wantErr: []string{"PPROF_ADDR", "6060", "OPS_ADDR", "9090"}},
@@ -221,30 +217,30 @@ func TestLoadJWT(t *testing.T) {
 }
 
 func TestLoadTokens(t *testing.T) {
-	defaults := tokens{
+	defaults := tokensCfg{
 		accessTTL:        10 * time.Minute,
 		refreshTTL:       720 * time.Hour,
 		refreshGrace:     15 * time.Second,
 		verifyEmailTTL:   24 * time.Hour,
 		resetPasswordTTL: time.Hour,
 	}
-	with := func(mod func(*tokens)) tokens {
+	with := func(mod func(*tokensCfg)) tokensCfg {
 		c := defaults
 		mod(&c)
 		return c
 	}
 
-	checkLoad(t, loadTokens, nil, []loadCase[tokens]{
+	checkLoad(t, loadTokens, nil, []loadCase[tokensCfg]{
 		{name: "defaults", want: defaults},
-		{name: "valid ACCESS_TTL", env: map[string]string{"ACCESS_TTL": "5m"}, want: with(func(c *tokens) { c.accessTTL = 5 * time.Minute })},
-		{name: "valid REFRESH_TTL", env: map[string]string{"REFRESH_TTL": "24h"}, want: with(func(c *tokens) { c.refreshTTL = 24 * time.Hour })},
-		{name: "valid VERIFY_EMAIL_TOKEN_TTL", env: map[string]string{"VERIFY_EMAIL_TOKEN_TTL": "48h"}, want: with(func(c *tokens) { c.verifyEmailTTL = 48 * time.Hour })},
-		{name: "valid RESET_PASSWORD_TOKEN_TTL", env: map[string]string{"RESET_PASSWORD_TOKEN_TTL": "15m"}, want: with(func(c *tokens) { c.resetPasswordTTL = 15 * time.Minute })},
+		{name: "valid ACCESS_TTL", env: map[string]string{"ACCESS_TTL": "5m"}, want: with(func(c *tokensCfg) { c.accessTTL = 5 * time.Minute })},
+		{name: "valid REFRESH_TTL", env: map[string]string{"REFRESH_TTL": "24h"}, want: with(func(c *tokensCfg) { c.refreshTTL = 24 * time.Hour })},
+		{name: "valid VERIFY_EMAIL_TOKEN_TTL", env: map[string]string{"VERIFY_EMAIL_TOKEN_TTL": "48h"}, want: with(func(c *tokensCfg) { c.verifyEmailTTL = 48 * time.Hour })},
+		{name: "valid RESET_PASSWORD_TOKEN_TTL", env: map[string]string{"RESET_PASSWORD_TOKEN_TTL": "15m"}, want: with(func(c *tokensCfg) { c.resetPasswordTTL = 15 * time.Minute })},
 		{name: "non-duration ACCESS_TTL", env: map[string]string{"ACCESS_TTL": "abc"}, wantErr: []string{"ACCESS_TTL", "abc"}},
 		{name: "zero ACCESS_TTL", env: map[string]string{"ACCESS_TTL": "0s"}, wantErr: []string{"ACCESS_TTL", "0s"}},
 		{name: "negative ACCESS_TTL", env: map[string]string{"ACCESS_TTL": "-5m"}, wantErr: []string{"ACCESS_TTL", "-5m"}},
 		{name: "REFRESH_TTL in days is not a Go duration", env: map[string]string{"REFRESH_TTL": "30d"}, wantErr: []string{"REFRESH_TTL", "30d"}},
-		{name: "valid REFRESH_GRACE_PERIOD", env: map[string]string{"REFRESH_GRACE_PERIOD": "30s"}, want: with(func(c *tokens) { c.refreshGrace = 30 * time.Second })},
+		{name: "valid REFRESH_GRACE_PERIOD", env: map[string]string{"REFRESH_GRACE_PERIOD": "30s"}, want: with(func(c *tokensCfg) { c.refreshGrace = 30 * time.Second })},
 		{name: "zero REFRESH_GRACE_PERIOD", env: map[string]string{"REFRESH_GRACE_PERIOD": "0"}, wantErr: []string{"REFRESH_GRACE_PERIOD", "0"}},
 		{name: "zero REFRESH_TTL", env: map[string]string{"REFRESH_TTL": "0"}, wantErr: []string{"REFRESH_TTL", "0"}},
 		{name: "negative REFRESH_TTL", env: map[string]string{"REFRESH_TTL": "-1h"}, wantErr: []string{"REFRESH_TTL", "-1h"}},
@@ -257,30 +253,30 @@ func TestLoadTokens(t *testing.T) {
 }
 
 func TestLoadArgon2(t *testing.T) {
-	defaults := argon2{time: 3, memoryKiB: 65536, threads: 4, concurrency: defaultArgon2Concurrency(testCPUs, 4)}
-	with := func(mod func(*argon2)) argon2 {
+	defaults := argon2Cfg{time: 3, memoryKiB: 65536, threads: 4, concurrency: defaultArgon2Concurrency(testCPUs, 4)}
+	with := func(mod func(*argon2Cfg)) argon2Cfg {
 		c := defaults
 		mod(&c)
 		return c
 	}
 
-	load := func(lookup lookupFunc) (argon2, error) { return loadArgon2(lookup, testCPUs) }
+	load := func(lookup lookupFunc) (argon2Cfg, error) { return loadArgon2(lookup, testCPUs) }
 
-	checkLoad(t, load, nil, []loadCase[argon2]{
+	checkLoad(t, load, nil, []loadCase[argon2Cfg]{
 		{name: "defaults", want: defaults},
-		{name: "valid ARGON2_TIME", env: map[string]string{"ARGON2_TIME": "1"}, want: with(func(c *argon2) { c.time = 1 })},
-		{name: "valid ARGON2_MEMORY_KIB", env: map[string]string{"ARGON2_MEMORY_KIB": "19456"}, want: with(func(c *argon2) { c.memoryKiB = 19456 })},
+		{name: "valid ARGON2_TIME", env: map[string]string{"ARGON2_TIME": "1"}, want: with(func(c *argon2Cfg) { c.time = 1 })},
+		{name: "valid ARGON2_MEMORY_KIB", env: map[string]string{"ARGON2_MEMORY_KIB": "19456"}, want: with(func(c *argon2Cfg) { c.memoryKiB = 19456 })},
 		{
 			name: "valid ARGON2_THREADS changes the default ARGON2_CONCURRENCY",
 			env:  map[string]string{"ARGON2_THREADS": "2"},
-			want: with(func(c *argon2) {
+			want: with(func(c *argon2Cfg) {
 				c.threads = 2
 				c.concurrency = defaultArgon2Concurrency(testCPUs, 2)
 			}),
 		},
-		{name: "valid ARGON2_CONCURRENCY", env: map[string]string{"ARGON2_CONCURRENCY": "3"}, want: with(func(c *argon2) { c.concurrency = 3 })},
-		{name: "ARGON2_MEMORY_KIB at the minimum for the threads", env: map[string]string{"ARGON2_THREADS": "4", "ARGON2_MEMORY_KIB": "32"}, want: with(func(c *argon2) { c.memoryKiB = 32 })},
-		{name: "max ARGON2_THREADS", env: map[string]string{"ARGON2_THREADS": "255"}, want: with(func(c *argon2) { c.threads = math.MaxUint8; c.concurrency = 1 })},
+		{name: "valid ARGON2_CONCURRENCY", env: map[string]string{"ARGON2_CONCURRENCY": "3"}, want: with(func(c *argon2Cfg) { c.concurrency = 3 })},
+		{name: "ARGON2_MEMORY_KIB at the minimum for the threads", env: map[string]string{"ARGON2_THREADS": "4", "ARGON2_MEMORY_KIB": "32"}, want: with(func(c *argon2Cfg) { c.memoryKiB = 32 })},
+		{name: "max ARGON2_THREADS", env: map[string]string{"ARGON2_THREADS": "255"}, want: with(func(c *argon2Cfg) { c.threads = math.MaxUint8; c.concurrency = 1 })},
 		{name: "non-numerical ARGON2_TIME", env: map[string]string{"ARGON2_TIME": "abc"}, wantErr: []string{"ARGON2_TIME", "abc"}},
 		{name: "zero ARGON2_TIME", env: map[string]string{"ARGON2_TIME": "0"}, wantErr: []string{"ARGON2_TIME", "0"}},
 		{name: "negative ARGON2_TIME", env: map[string]string{"ARGON2_TIME": "-1"}, wantErr: []string{"ARGON2_TIME", "-1"}},
@@ -332,20 +328,34 @@ func TestLoadLogin(t *testing.T) {
 	})
 }
 
-func TestLoadMail(t *testing.T) {
-	defaults := mailCfg{requestCooldown: time.Minute, requestHourlyMax: 5}
+func TestLoadAuthMail(t *testing.T) {
+	defaults := authMailCfg{requestCooldown: time.Minute, requestHourlyMax: 5}
 
-	checkLoad(t, loadMail, nil, []loadCase[mailCfg]{
+	checkLoad(t, loadAuthMail, nil, []loadCase[authMailCfg]{
 		{name: "defaults", want: defaults},
-		{name: "valid MAIL_REQUEST_COOLDOWN", env: map[string]string{"MAIL_REQUEST_COOLDOWN": "90s"}, want: mailCfg{requestCooldown: 90 * time.Second, requestHourlyMax: 5}},
-		{name: "valid MAIL_REQUEST_HOURLY_MAX", env: map[string]string{"MAIL_REQUEST_HOURLY_MAX": "20"}, want: mailCfg{requestCooldown: time.Minute, requestHourlyMax: 20}},
-		{name: "non-duration MAIL_REQUEST_COOLDOWN", env: map[string]string{"MAIL_REQUEST_COOLDOWN": "abc"}, wantErr: []string{"MAIL_REQUEST_COOLDOWN", "abc"}},
-		{name: "zero MAIL_REQUEST_COOLDOWN", env: map[string]string{"MAIL_REQUEST_COOLDOWN": "0"}, wantErr: []string{"MAIL_REQUEST_COOLDOWN", "0"}},
-		{name: "negative MAIL_REQUEST_COOLDOWN", env: map[string]string{"MAIL_REQUEST_COOLDOWN": "-1m"}, wantErr: []string{"MAIL_REQUEST_COOLDOWN", "-1m"}},
-		{name: "MAIL_REQUEST_COOLDOWN finer than a millisecond", env: map[string]string{"MAIL_REQUEST_COOLDOWN": "1500us"}, wantErr: []string{"MAIL_REQUEST_COOLDOWN", "1500us"}},
-		{name: "zero MAIL_REQUEST_HOURLY_MAX", env: map[string]string{"MAIL_REQUEST_HOURLY_MAX": "0"}, wantErr: []string{"MAIL_REQUEST_HOURLY_MAX", "0"}},
-		{name: "non-numerical MAIL_REQUEST_HOURLY_MAX", env: map[string]string{"MAIL_REQUEST_HOURLY_MAX": "many"}, wantErr: []string{"MAIL_REQUEST_HOURLY_MAX", "many"}},
-		{name: "both invalid are reported together", env: map[string]string{"MAIL_REQUEST_COOLDOWN": "abc", "MAIL_REQUEST_HOURLY_MAX": "0"}, wantErr: []string{"MAIL_REQUEST_COOLDOWN", "MAIL_REQUEST_HOURLY_MAX"}},
+		{name: "valid AUTH_MAIL_COOLDOWN", env: map[string]string{"AUTH_MAIL_COOLDOWN": "90s"}, want: authMailCfg{requestCooldown: 90 * time.Second, requestHourlyMax: 5}},
+		{name: "valid AUTH_MAIL_HOURLY_MAX", env: map[string]string{"AUTH_MAIL_HOURLY_MAX": "20"}, want: authMailCfg{requestCooldown: time.Minute, requestHourlyMax: 20}},
+		{name: "non-duration AUTH_MAIL_COOLDOWN", env: map[string]string{"AUTH_MAIL_COOLDOWN": "abc"}, wantErr: []string{"AUTH_MAIL_COOLDOWN", "abc"}},
+		{name: "zero AUTH_MAIL_COOLDOWN", env: map[string]string{"AUTH_MAIL_COOLDOWN": "0"}, wantErr: []string{"AUTH_MAIL_COOLDOWN", "0"}},
+		{name: "negative AUTH_MAIL_COOLDOWN", env: map[string]string{"AUTH_MAIL_COOLDOWN": "-1m"}, wantErr: []string{"AUTH_MAIL_COOLDOWN", "-1m"}},
+		{name: "AUTH_MAIL_COOLDOWN finer than a millisecond", env: map[string]string{"AUTH_MAIL_COOLDOWN": "1500us"}, wantErr: []string{"AUTH_MAIL_COOLDOWN", "1500us"}},
+		{name: "zero AUTH_MAIL_HOURLY_MAX", env: map[string]string{"AUTH_MAIL_HOURLY_MAX": "0"}, wantErr: []string{"AUTH_MAIL_HOURLY_MAX", "0"}},
+		{name: "non-numerical AUTH_MAIL_HOURLY_MAX", env: map[string]string{"AUTH_MAIL_HOURLY_MAX": "many"}, wantErr: []string{"AUTH_MAIL_HOURLY_MAX", "many"}},
+		{name: "both invalid are reported together", env: map[string]string{"AUTH_MAIL_COOLDOWN": "abc", "AUTH_MAIL_HOURLY_MAX": "0"}, wantErr: []string{"AUTH_MAIL_COOLDOWN", "AUTH_MAIL_HOURLY_MAX"}},
+	})
+}
+
+func TestLoadInviteMail(t *testing.T) {
+	defaults := inviteMailCfg{requestCooldown: 10 * time.Second, requestHourlyMax: 5}
+
+	checkLoad(t, loadInviteMail, nil, []loadCase[inviteMailCfg]{
+		{name: "defaults", want: defaults},
+		{name: "valid INVITE_MAIL_COOLDOWN", env: map[string]string{"INVITE_MAIL_COOLDOWN": "90s"}, want: inviteMailCfg{requestCooldown: 90 * time.Second, requestHourlyMax: 5}},
+		{name: "valid INVITE_MAIL_HOURLY_MAX", env: map[string]string{"INVITE_MAIL_HOURLY_MAX": "20"}, want: inviteMailCfg{requestCooldown: 10 * time.Second, requestHourlyMax: 20}},
+		{name: "zero INVITE_MAIL_COOLDOWN", env: map[string]string{"INVITE_MAIL_COOLDOWN": "0"}, wantErr: []string{"INVITE_MAIL_COOLDOWN", "0"}},
+		{name: "INVITE_MAIL_COOLDOWN finer than a millisecond", env: map[string]string{"INVITE_MAIL_COOLDOWN": "1500us"}, wantErr: []string{"INVITE_MAIL_COOLDOWN", "1500us"}},
+		{name: "zero INVITE_MAIL_HOURLY_MAX", env: map[string]string{"INVITE_MAIL_HOURLY_MAX": "0"}, wantErr: []string{"INVITE_MAIL_HOURLY_MAX", "0"}},
+		{name: "both invalid are reported together", env: map[string]string{"INVITE_MAIL_COOLDOWN": "abc", "INVITE_MAIL_HOURLY_MAX": "0"}, wantErr: []string{"INVITE_MAIL_COOLDOWN", "INVITE_MAIL_HOURLY_MAX"}},
 	})
 }
 
@@ -474,21 +484,21 @@ func TestLoadSMTP(t *testing.T) {
 func defaultConfig() config {
 	return config{
 		port:      8080,
-		tasks:     tasks{store: "memory", overdueScanEnabled: true, overdueScanInterval: 30 * time.Second},
-		db:        db{url: testDBURL, host: "localhost", name: "tasks"},
+		tasks:     tasksCfg{overdueScanEnabled: true, overdueScanInterval: 30 * time.Second},
+		db:        dbCfg{url: testDBURL, host: "localhost", name: "tasks"},
 		redis:     redisCfg{url: testRedisURL, host: "localhost", dbName: "0"},
-		logging:   logging{format: "text", level: slog.LevelInfo},
-		rateLimit: rateLimit{rps: 10, burst: 20},
-		cors:      cors{maxAge: 10 * time.Minute},
-		addrs:     addrs{ops: "127.0.0.1:9091"},
+		logging:   loggingCfg{format: "text", level: slog.LevelInfo},
+		rateLimit: rateLimitCfg{rps: 10, burst: 20},
+		cors:      corsCfg{maxAge: 10 * time.Minute},
+		addrs:     addrsCfg{ops: "127.0.0.1:9091"},
 		jwt: jwtCfg{
 			privateKeyPath: "secrets/jwt_ed25519.key",
 			publicKeyPath:  "secrets/jwt_ed25519.pub",
 			issuer:         testIssuer,
 			audiences:      []string{testAudience},
 		},
-		tokens: tokens{accessTTL: 10 * time.Minute, refreshTTL: 720 * time.Hour, refreshGrace: 15 * time.Second, verifyEmailTTL: 24 * time.Hour, resetPasswordTTL: time.Hour},
-		argon2: argon2{
+		tokens: tokensCfg{accessTTL: 10 * time.Minute, refreshTTL: 720 * time.Hour, refreshGrace: 15 * time.Second, verifyEmailTTL: 24 * time.Hour, resetPasswordTTL: time.Hour},
+		argon2: argon2Cfg{
 			time:        3,
 			memoryKiB:   65536,
 			threads:     4,
@@ -499,7 +509,9 @@ func defaultConfig() config {
 			backoff:      []time.Duration{30 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute},
 			window:       time.Hour,
 		},
-		mail: mailCfg{requestCooldown: time.Minute, requestHourlyMax: 5},
+		authMail:    authMailCfg{requestCooldown: time.Minute, requestHourlyMax: 5},
+		inviteMail:  inviteMailCfg{requestCooldown: 10 * time.Second, requestHourlyMax: 5},
+		inviteOwner: inviteOwnerCfg{hourlyMax: 30},
 		smtp: email.SMTPConfig{
 			Host:    testSMTPHost,
 			Port:    587,
@@ -542,22 +554,19 @@ func TestLoadConfig(t *testing.T) {
 		{name: "PORT out of range", env: map[string]string{"PORT": "65536"}, wantErr: []string{"PORT", "65536"}},
 
 		{
-			// DATABASE_URL does not depend on TASKS_STORE: it is validated even
-			// when tasks are kept in memory.
-			name:    "TASKS_STORE=memory with invalid DATABASE_URL",
-			env:     map[string]string{"TASKS_STORE": "memory", "DATABASE_URL": "abcd1234"},
+			name:    "invalid DATABASE_URL",
+			env:     map[string]string{"DATABASE_URL": "abcd1234"},
 			wantErr: []string{"DATABASE_URL"},
 		},
 		{
-			name:    "TASKS_STORE=postgres with missing DATABASE_URL",
-			env:     map[string]string{"TASKS_STORE": "postgres", "DATABASE_URL": ""},
+			name:    "missing DATABASE_URL",
+			env:     map[string]string{"DATABASE_URL": ""},
 			wantErr: []string{"DATABASE_URL"},
 		},
 
 		{
 			name: "every group is loaded",
 			env: map[string]string{
-				"TASKS_STORE":                 "postgres",
 				"DATABASE_URL":                "postgres://u:p@host:5432/db",
 				"REDIS_URL":                   "redis://cache.internal:6380/3",
 				"LOG_FORMAT":                  "json",
@@ -570,8 +579,7 @@ func TestLoadConfig(t *testing.T) {
 				"ARGON2_TIME":                 "1",
 			},
 			want: cfgWith(func(c *config) {
-				c.tasks.store = "postgres"
-				c.db = db{url: "postgres://u:p@host:5432/db", host: "host", name: "db"}
+				c.db = dbCfg{url: "postgres://u:p@host:5432/db", host: "host", name: "db"}
 				c.redis = redisCfg{url: "redis://cache.internal:6380/3", host: "cache.internal", dbName: "3"}
 				c.logging.format = "json"
 				c.tasks.overdueScanEnabled = false
@@ -587,7 +595,6 @@ func TestLoadConfig(t *testing.T) {
 			name: "errors of every group are reported together",
 			env: map[string]string{
 				"PORT":                         "xyz",
-				"TASKS_STORE":                  "foo",
 				"DATABASE_URL":                 "abc",
 				"REDIS_URL":                    "abc",
 				"LOG_LEVEL":                    "loud",
@@ -600,7 +607,7 @@ func TestLoadConfig(t *testing.T) {
 				"ARGON2_TIME":                  "0",
 			},
 			wantErr: []string{
-				"PORT", "xyz", "TASKS_STORE", "foo", "DATABASE_URL", "REDIS_URL", "LOG_LEVEL", "loud", "OVERDUE_SCAN_WORKER_INTERVAL",
+				"PORT", "xyz", "DATABASE_URL", "REDIS_URL", "LOG_LEVEL", "loud", "OVERDUE_SCAN_WORKER_INTERVAL",
 				"RATE_LIMIT_BURST", "CORS_ALLOWED_ORIGINS", "OPS_ADDR", "JWT_ISSUER", "ACCESS_TTL", "ARGON2_TIME",
 			},
 		},
@@ -935,4 +942,13 @@ func TestDefaultArgon2Concurrency(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadInviteOwner(t *testing.T) {
+	checkLoad(t, loadInviteOwner, nil, []loadCase[inviteOwnerCfg]{
+		{name: "defaults", want: inviteOwnerCfg{hourlyMax: 30}},
+		{name: "valid INVITE_OWNER_HOURLY_MAX", env: map[string]string{"INVITE_OWNER_HOURLY_MAX": "100"}, want: inviteOwnerCfg{hourlyMax: 100}},
+		{name: "zero INVITE_OWNER_HOURLY_MAX", env: map[string]string{"INVITE_OWNER_HOURLY_MAX": "0"}, wantErr: []string{"INVITE_OWNER_HOURLY_MAX", "0"}},
+		{name: "non-numerical INVITE_OWNER_HOURLY_MAX", env: map[string]string{"INVITE_OWNER_HOURLY_MAX": "many"}, wantErr: []string{"INVITE_OWNER_HOURLY_MAX", "many"}},
+	})
 }

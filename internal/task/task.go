@@ -48,11 +48,13 @@ type Task struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	OwnerID     uuid.UUID
+	AssigneeID  *uuid.UUID
 }
 
 type NewParams struct {
 	Title       string
 	OwnerID     uuid.UUID
+	AssigneeID  *uuid.UUID
 	Description *string
 	Status      Status
 	DueAt       *time.Time

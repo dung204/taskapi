@@ -12,7 +12,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/dung204/taskapi/internal/metrics"
-	"github.com/dung204/taskapi/internal/store/memory"
 	"github.com/dung204/taskapi/internal/task"
 	"github.com/dung204/taskapi/internal/testutil/logtest"
 )
@@ -21,7 +20,7 @@ type panicStore struct {
 	task.Store
 }
 
-func (s panicStore) Get(context.Context, uuid.UUID) (task.Task, error) {
+func (s panicStore) Get(context.Context, uuid.UUID, uuid.UUID) (task.Access, error) {
 	panic("boom")
 }
 
@@ -39,18 +38,20 @@ func (f *fakeLimiter) Allow(key string) (bool, time.Duration) {
 func setupTestWithLimiter(t *testing.T, store task.Store, l Limiter) http.Handler {
 	t.Helper()
 	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-	return withTestAuth(t, HandlerDeps{Tasks: store, Logger: logger, Limiter: l})
+	return withTestAuth(t, HandlerDeps{Tasks: newTestService(t, store), Logger: logger, Limiter: l})
 }
 
 func setupTestWithCORS(t *testing.T, store task.Store, l Limiter, opts CORSMiddlewareOpts) http.Handler {
 	t.Helper()
 	logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
-	return withTestAuth(t, HandlerDeps{Tasks: store, Logger: logger, Limiter: l, CORS: opts})
+	return withTestAuth(t, HandlerDeps{Tasks: newTestService(t, store), Logger: logger, Limiter: l, CORS: opts})
 }
 
 func TestHandler(t *testing.T) {
+	t.Parallel()
 
 	t.Run("non-exist path", func(t *testing.T) {
+		t.Parallel()
 		h, _, _ := setupTest(t)
 		rec, req := prepareTestRequest(t, http.MethodGet, "/abc", nil)
 		h.ServeHTTP(rec, req)
@@ -64,6 +65,7 @@ func TestHandler(t *testing.T) {
 	})
 
 	t.Run("wrong method", func(t *testing.T) {
+		t.Parallel()
 		h, _, _ := setupTest(t)
 		rec, req := prepareTestRequest(t, http.MethodDelete, "/tasks", nil)
 		h.ServeHTTP(rec, req)
@@ -77,6 +79,7 @@ func TestHandler(t *testing.T) {
 	})
 
 	t.Run("X-Request-ID header returned and logged", func(t *testing.T) {
+		t.Parallel()
 		h, _, logRec := setupTest(t)
 		reqIDHeader := "X-Request-ID"
 		wantReqID := "abc"
@@ -104,8 +107,8 @@ func TestHandler(t *testing.T) {
 	})
 
 	t.Run("panic recovered", func(t *testing.T) {
-		store := panicStore{Store: memory.NewTaskStore()}
-		h, logRec := setupTestWithStore(t, store)
+		store := panicStore{}
+		h, _, logRec := setupTestWithStore(t, store)
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks/018f0000-0000-7000-8000-000000000000", nil)
 		h.ServeHTTP(rec, req)
 
@@ -147,7 +150,7 @@ func TestHandler(t *testing.T) {
 	t.Run("rate limited", func(t *testing.T) {
 		// panicStore turns any request that reaches the handler into a 500.
 		l := &fakeLimiter{ok: false, retryAfter: 1500 * time.Millisecond}
-		h := setupTestWithLimiter(t, panicStore{Store: memory.NewTaskStore()}, l)
+		h := setupTestWithLimiter(t, panicStore{}, l)
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks/018f0000-0000-7000-8000-000000000000", nil)
 		h.ServeHTTP(rec, req)
 
@@ -173,7 +176,7 @@ func TestHandler(t *testing.T) {
 		for _, path := range []string{"/tasks?limit=abc", "/tasks?offset=abc", "/tasks?status=%zz", "/tasks/not-a-uuid"} {
 			t.Run(path, func(t *testing.T) {
 				l := &fakeLimiter{ok: false, retryAfter: time.Second}
-				h := setupTestWithLimiter(t, memory.NewTaskStore(), l)
+				h := setupTestWithLimiter(t, nil, l)
 				rec, req := prepareTestRequest(t, http.MethodGet, path, nil)
 				req.RemoteAddr = "192.0.2.7:4321"
 				h.ServeHTTP(rec, req)
@@ -193,7 +196,7 @@ func TestHandler(t *testing.T) {
 
 	t.Run("a bad parameter within the limit is a 400 that used one token", func(t *testing.T) {
 		l := &fakeLimiter{ok: true}
-		h := setupTestWithLimiter(t, memory.NewTaskStore(), l)
+		h := setupTestWithLimiter(t, nil, l)
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks?limit=abc", nil)
 		req.RemoteAddr = "192.0.2.7:4321"
 		h.ServeHTTP(rec, req)
@@ -210,7 +213,7 @@ func TestHandler(t *testing.T) {
 		reg := prometheus.NewRegistry()
 		logger := slog.New(NewRequestIDContextHandler(logtest.NewRecorder()))
 		h := withTestAuth(t, HandlerDeps{
-			Tasks:   memory.NewTaskStore(),
+			Tasks:   newTestService(t, nil),
 			Logger:  logger,
 			Metrics: Metrics{HTTP: metrics.NewHTTP(reg)},
 			Limiter: &fakeLimiter{ok: false},
@@ -250,7 +253,7 @@ func TestHandler(t *testing.T) {
 
 	t.Run("not rate limited", func(t *testing.T) {
 		l := &fakeLimiter{ok: true}
-		h := setupTestWithLimiter(t, memory.NewTaskStore(), l)
+		h := setupTestWithLimiter(t, nil, l)
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.RemoteAddr = "192.0.2.7:4321"
 		h.ServeHTTP(rec, req)
@@ -270,7 +273,7 @@ func TestHandler(t *testing.T) {
 
 	t.Run("request without a client IP is not limited", func(t *testing.T) {
 		l := &fakeLimiter{ok: false}
-		h := setupTestWithLimiter(t, memory.NewTaskStore(), l)
+		h := setupTestWithLimiter(t, nil, l)
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.RemoteAddr = "@"
 		h.ServeHTTP(rec, req)
@@ -287,7 +290,7 @@ func TestHandler(t *testing.T) {
 	t.Run("CORS preflight is answered before the router and the rate limiter", func(t *testing.T) {
 		const origin = "https://app.example.com"
 		l := &fakeLimiter{ok: false}
-		h := setupTestWithCORS(t, memory.NewTaskStore(), l, CORSMiddlewareOpts{AllowedOrigins: []string{origin}, MaxAge: time.Minute})
+		h := setupTestWithCORS(t, nil, l, CORSMiddlewareOpts{AllowedOrigins: []string{origin}, MaxAge: time.Minute})
 		rec, req := prepareTestRequest(t, http.MethodOptions, "/tasks", nil)
 		req.Header.Set("Origin", origin)
 		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
@@ -312,7 +315,7 @@ func TestHandler(t *testing.T) {
 
 	t.Run("CORS headers on a regular response", func(t *testing.T) {
 		const origin = "https://app.example.com"
-		h := setupTestWithCORS(t, memory.NewTaskStore(), nil, CORSMiddlewareOpts{AllowedOrigins: []string{origin}})
+		h := setupTestWithCORS(t, nil, nil, CORSMiddlewareOpts{AllowedOrigins: []string{origin}})
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.Header.Set("Origin", origin)
 		h.ServeHTTP(rec, req)
@@ -338,7 +341,7 @@ func TestHandler(t *testing.T) {
 		// Without them a browser would hide the 429 and its Retry-After from the page.
 		const origin = "https://app.example.com"
 		l := &fakeLimiter{ok: false, retryAfter: time.Second}
-		h := setupTestWithCORS(t, memory.NewTaskStore(), l, CORSMiddlewareOpts{AllowedOrigins: []string{origin}})
+		h := setupTestWithCORS(t, nil, l, CORSMiddlewareOpts{AllowedOrigins: []string{origin}})
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.Header.Set("Origin", origin)
 		h.ServeHTTP(rec, req)
@@ -353,7 +356,8 @@ func TestHandler(t *testing.T) {
 	})
 
 	t.Run("CORS is not wired without allowed origins", func(t *testing.T) {
-		h := setupTestWithCORS(t, memory.NewTaskStore(), nil, CORSMiddlewareOpts{})
+		t.Parallel()
+		h := setupTestWithCORS(t, nil, nil, CORSMiddlewareOpts{})
 
 		rec, req := prepareTestRequest(t, http.MethodGet, "/tasks", nil)
 		req.Header.Set("Origin", "https://app.example.com")
@@ -375,6 +379,7 @@ func TestHandler(t *testing.T) {
 }
 
 func TestUserAgentMiddleware(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		userAgent string
@@ -438,6 +443,7 @@ func TestUserAgentMiddleware(t *testing.T) {
 }
 
 func TestUserAgentFrom(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		ctx  context.Context
